@@ -4,7 +4,7 @@ Configurable crawler for public quantitative trading strategy source code.
 
 The crawler favors public APIs and polite crawling:
     - GitHub code search API for open-source repositories.
-    - Optional HTML index pages configured by the user.
+    - Optional HTML index pages and public strategy article pages.
     - Rate limiting, retries, robots.txt checks, stateful resume, logging.
 
 It does not bypass login walls, captchas, paywalls, or access controls.
@@ -80,6 +80,27 @@ LOW_QUALITY_PATTERNS = (
     "pass  #",
     "print('hello",
     'print("hello',
+)
+
+DEFAULT_CODE_SELECTORS = (
+    "pre",
+    "code",
+    ".highlight",
+    ".codehilite",
+    ".language-python",
+    ".python",
+)
+
+DEFAULT_EXCLUDE_URL_PATTERNS = (
+    r"/login",
+    r"/signup",
+    r"/register",
+    r"/account",
+    r"/user",
+    r"/about",
+    r"/help",
+    r"/privacy",
+    r"/terms",
 )
 
 TYPE_RULES = {
@@ -432,6 +453,7 @@ class StrategyCrawler:
                         continue
                     if self.dry_run:
                         self.state.mark_url(candidate.url, "dry_run_accepted", str(strategy.score))
+                        saved += 1
                         LOGGER.info(
                             "Dry-run accepted score=%s type=%s url=%s",
                             strategy.score,
@@ -468,6 +490,8 @@ class StrategyCrawler:
             return self.iter_url_list_candidates(source)
         if source_type == "local_fixture":
             return self.iter_local_fixture_candidates(source)
+        if source_type == "web_strategy_pages":
+            return self.iter_web_strategy_page_candidates(source)
         LOGGER.warning("Unsupported source type: %s", source_type)
         return []
 
@@ -608,10 +632,129 @@ class StrategyCrawler:
             )
         return candidates[: self.max_items_per_source]
 
+    def iter_web_strategy_page_candidates(self, source: dict[str, Any]) -> list[CrawlCandidate]:
+        """
+        Discover public strategy/article pages and extract Python-like code blocks.
+
+        This source type is intended for public community/tutorial pages such as
+        JoinQuant, RiceQuant, BigQuant, and QuantConnect. It does not interact
+        with login-required or protected content.
+        """
+        name = source.get("name", "web_strategy_pages")
+        start_urls = source.get("start_urls", [])
+        max_pages = int(source.get("max_pages", self.max_items_per_source))
+        max_candidates = int(source.get("max_candidates", self.max_items_per_source))
+        same_domain = bool(source.get("same_domain", True))
+        article_patterns = compile_patterns(source.get("article_url_patterns", []))
+        exclude_patterns = compile_patterns(
+            source.get("exclude_url_patterns", DEFAULT_EXCLUDE_URL_PATTERNS)
+        )
+
+        page_urls: list[str] = []
+        seen_pages: set[str] = set()
+        candidates: list[CrawlCandidate] = []
+
+        for start_url in start_urls:
+            try:
+                LOGGER.info("Discover web pages source=%s url=%s", name, start_url)
+                response = self.http.get(start_url)
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.warning("Failed to fetch start url %s: %s", start_url, exc)
+                continue
+
+            if start_url not in seen_pages:
+                page_urls.append(start_url)
+                seen_pages.add(start_url)
+
+            soup = BeautifulSoup(response.text, "html.parser")
+            for anchor in soup.find_all("a", href=True):
+                href = normalize_url(start_url, anchor["href"])
+                if not href:
+                    continue
+                if href in seen_pages:
+                    continue
+                if not should_visit_url(
+                    href=href,
+                    start_url=start_url,
+                    same_domain=same_domain,
+                    include_patterns=article_patterns,
+                    exclude_patterns=exclude_patterns,
+                ):
+                    continue
+                page_urls.append(href)
+                seen_pages.add(href)
+                if len(page_urls) >= max_pages:
+                    break
+            if len(page_urls) >= max_pages:
+                break
+
+        for page_url in page_urls[:max_pages]:
+            if len(candidates) >= max_candidates:
+                break
+            try:
+                LOGGER.info("Extract code blocks source=%s page=%s", name, page_url)
+                response = self.http.get(page_url)
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.warning("Failed to fetch strategy page %s: %s", page_url, exc)
+                continue
+
+            page_candidates = self.extract_code_block_candidates(source, page_url, response.text)
+            for candidate in page_candidates:
+                candidates.append(candidate)
+                if len(candidates) >= max_candidates:
+                    break
+
+        return candidates
+
+    def extract_code_block_candidates(
+        self,
+        source: dict[str, Any],
+        page_url: str,
+        html: str,
+    ) -> list[CrawlCandidate]:
+        name = source.get("name", "web_strategy_pages")
+        selectors = source.get("code_selectors", list(DEFAULT_CODE_SELECTORS))
+        min_code_chars = int(source.get("min_code_chars", 400))
+        soup = BeautifulSoup(html, "html.parser")
+        candidates: list[CrawlCandidate] = []
+        seen_blocks: set[str] = set()
+
+        for selector in selectors:
+            for index, node in enumerate(soup.select(selector), start=1):
+                code = normalize_code_block(node.get_text("\n"))
+                if len(code) < min_code_chars:
+                    continue
+                if not looks_like_strategy_code(code):
+                    continue
+                block_hash = hashlib.sha256(code.encode("utf-8", errors="ignore")).hexdigest()
+                if block_hash in seen_blocks:
+                    continue
+                seen_blocks.add(block_hash)
+                filename = build_page_strategy_filename(page_url, index)
+                candidates.append(
+                    CrawlCandidate(
+                        source_name=name,
+                        source_type="web_strategy_pages",
+                        url=f"{page_url}#code-block-{index}",
+                        name=filename,
+                        content_url=page_url,
+                        metadata={
+                            "page_url": page_url,
+                            "selector": selector,
+                            "code_block_index": index,
+                            "code": code,
+                        },
+                    )
+                )
+
+        return candidates
+
     def fetch_candidate_code(self, candidate: CrawlCandidate) -> str:
         if candidate.source_type == "github_code_search":
             return self.fetch_github_code(candidate)
         if candidate.source_type == "local_fixture":
+            return str(candidate.metadata.get("code", ""))
+        if candidate.source_type == "web_strategy_pages":
             return str(candidate.metadata.get("code", ""))
         response = self.http.get(candidate.content_url or candidate.url)
         return response.text
@@ -651,6 +794,73 @@ def unique_path(path: Path) -> Path:
     raise RuntimeError(f"Cannot create unique path for {path}")
 
 
+def compile_patterns(patterns: list[str] | tuple[str, ...]) -> list[re.Pattern[str]]:
+    return [re.compile(pattern, re.IGNORECASE) for pattern in patterns]
+
+
+def normalize_url(base_url: str, href: str) -> str | None:
+    href = href.strip()
+    if not href or href.startswith(("javascript:", "mailto:", "tel:")):
+        return None
+    url = urljoin(base_url, href)
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        return None
+    return parsed._replace(fragment="").geturl()
+
+
+def should_visit_url(
+    href: str,
+    start_url: str,
+    same_domain: bool,
+    include_patterns: list[re.Pattern[str]],
+    exclude_patterns: list[re.Pattern[str]],
+) -> bool:
+    if same_domain and urlparse(href).netloc != urlparse(start_url).netloc:
+        return False
+    if any(pattern.search(href) for pattern in exclude_patterns):
+        return False
+    if include_patterns and not any(pattern.search(href) for pattern in include_patterns):
+        return False
+    return True
+
+
+def normalize_code_block(code: str) -> str:
+    code = code.replace("\r\n", "\n").replace("\r", "\n")
+    lines = [line.rstrip() for line in code.split("\n")]
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return "\n".join(lines)
+
+
+def looks_like_strategy_code(code: str) -> bool:
+    normalized = code.lower()
+    code_markers = (
+        "def ",
+        "class ",
+        "import ",
+        "from ",
+        "self.",
+        "return ",
+    )
+    strategy_markers = tuple(STRATEGY_KEYWORDS | FRAMEWORK_KEYWORDS)
+    return (
+        sum(1 for marker in code_markers if marker in normalized) >= 2
+        and sum(1 for marker in strategy_markers if marker in normalized) >= 2
+    )
+
+
+def build_page_strategy_filename(page_url: str, index: int) -> str:
+    parsed = urlparse(page_url)
+    slug = Path(parsed.path).name or parsed.netloc
+    slug = safe_name(slug)
+    if not slug.endswith(".py"):
+        slug = f"{slug}_{index}.py"
+    return slug
+
+
 def load_config(path: Path) -> dict[str, Any]:
     with path.open("r", encoding="utf-8") as file:
         return json.load(file)
@@ -683,6 +893,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     parser.add_argument("--github-token", help="GitHub token. Defaults to GITHUB_TOKEN env var.")
     parser.add_argument("--max-items", type=int, help="Override crawler.max_items in config.")
+    parser.add_argument(
+        "--sources",
+        help="Comma-separated source names to run, e.g. github,quantconnect.",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Run filters without saving strategy files.")
     return parser.parse_args()
 
@@ -693,6 +907,13 @@ def main() -> None:
     config = load_config(Path(args.config))
     if args.max_items is not None:
         config.setdefault("crawler", {})["max_items"] = args.max_items
+    if args.sources:
+        selected_sources = {source.strip() for source in args.sources.split(",") if source.strip()}
+        config["sources"] = [
+            source for source in config.get("sources", []) if source.get("name") in selected_sources
+        ]
+        if not config["sources"]:
+            raise SystemExit(f"No configured sources matched: {sorted(selected_sources)}")
 
     crawler = StrategyCrawler(
         config=config,

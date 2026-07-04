@@ -139,6 +139,8 @@ python stock_feature_pipeline.py \
 - `stock_feature_pipeline.py`: main data extraction and feature engineering script
 - `strategy_crawler.py`: public quantitative strategy crawler
 - `crawler_config.json`: crawler source and quality configuration
+- `crawler_config.platforms.json`: JoinQuant, RiceQuant, BigQuant, and QuantConnect public page crawler configuration
+- `crawler_config.local_test.json`: offline crawler fixture test configuration
 - `strategies/`: saved strategy source code directory
 - `requirements.txt`: Python dependencies
 - `README.md`: project documentation
@@ -218,6 +220,28 @@ For a known list of public raw strategy URLs:
 }
 ```
 
+For public strategy article pages, use `web_strategy_pages`. This source type opens public index/tutorial/community pages, discovers matching article links, extracts Python-like code blocks from `pre`/`code` HTML nodes, then applies the normal quality filter.
+
+```json
+{
+  "name": "quantconnect",
+  "type": "web_strategy_pages",
+  "enabled": true,
+  "same_domain": true,
+  "start_urls": ["https://www.quantconnect.com/docs/v2/writing-algorithms"],
+  "article_url_patterns": ["quantconnect\\.com/docs", "algorithm", "strategy"]
+}
+```
+
+The repository includes `crawler_config.platforms.json` for public pages from:
+
+- `joinquant`
+- `ricequant`
+- `bigquant`
+- `quantconnect`
+
+These sources respect `robots.txt`. If a site disallows crawling, the crawler logs the skip and continues with other sources.
+
 ### Run the Crawler
 
 Run the built-in local fixture test without network access:
@@ -245,6 +269,30 @@ Dry run without saving strategy files:
 
 ```bash
 python strategy_crawler.py --dry-run --max-items 10
+```
+
+Dry run only QuantConnect public pages:
+
+```bash
+python strategy_crawler.py \
+  --config crawler_config.platforms.json \
+  --sources quantconnect \
+  --state-file .crawler_state/quantconnect_dry_run_state.json \
+  --log-file logs/quantconnect_dry_run.log \
+  --dry-run \
+  --max-items 1
+```
+
+Run public platform page crawling and save accepted strategies:
+
+```bash
+python strategy_crawler.py \
+  --config crawler_config.platforms.json \
+  --sources joinquant,bigquant,quantconnect \
+  --output-dir strategies \
+  --state-file .crawler_state/platforms_state.json \
+  --log-file logs/platforms_crawler.log \
+  --max-items 10
 ```
 
 Run and save accepted strategies:

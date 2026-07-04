@@ -6,5 +6,5 @@ __pycache__/
 logs/
 data/
 
-strategies/**/*.meta.json
-strategies/local_fixture/
+strategies/*
+!strategies/.gitkeep
