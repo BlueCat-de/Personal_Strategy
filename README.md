@@ -1,6 +1,6 @@
-# Personal Strategy
+# ai_native_strategy
 
-A-share stock data extraction and feature engineering toolkit for personal quantitative research.
+A-share data engineering, strategy crawling, and AI-native quantitative research toolkit.
 
 This project currently provides:
 
