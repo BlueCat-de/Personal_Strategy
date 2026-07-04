@@ -242,6 +242,15 @@ The repository includes `crawler_config.platforms.json` for public pages from:
 
 These sources respect `robots.txt`. If a site disallows crawling, the crawler logs the skip and continues with other sources.
 
+Current platform status from dry-run checks:
+
+| Source | Status | Notes |
+| --- | --- | --- |
+| `quantconnect` | Works | Public docs pages expose extractable code blocks. |
+| `bigquant` | Works after config narrowing | The config starts from wiki collection pages and discovers `/wiki/doc/` article pages. |
+| `joinquant` | Limited | Public community entry pages are client-rendered and static HTML does not expose article links or code blocks. Browser rendering or a documented public API is needed for reliable crawling. |
+| `ricequant` | Blocked by robots.txt | The configured public paths are disallowed by robots.txt, so the crawler skips them. |
+
 ### Run the Crawler
 
 Run the built-in local fixture test without network access:

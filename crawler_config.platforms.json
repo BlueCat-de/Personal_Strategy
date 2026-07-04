@@ -60,15 +60,12 @@
       "max_candidates": 8,
       "min_code_chars": 300,
       "start_urls": [
-        "https://bigquant.com/wiki/",
-        "https://bigquant.com/community/"
+        "https://bigquant.com/wiki/collection/SkPzwuq9oo",
+        "https://bigquant.com/wiki/collection/dhj0C1Hfqz",
+        "https://bigquant.com/wiki/collection/QkFJ6ZCzEq"
       ],
       "article_url_patterns": [
-        "bigquant\\.com/wiki",
-        "bigquant\\.com/community",
-        "strategy",
-        "alpha",
-        "factor"
+        "bigquant\\.com/wiki/doc/"
       ]
     },
     {
