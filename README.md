@@ -139,6 +139,7 @@ python stock_feature_pipeline.py \
 - `stock_feature_pipeline.py`: main data extraction and feature engineering script
 - `strategy_crawler.py`: public quantitative strategy crawler
 - `bigquant_strategy_scraper.py`: BigQuant strategy page scraper for known playground URLs
+- `quantconnect_strategy_scraper.py`: QuantConnect leaderboard strategy metadata scraper
 - `crawler_config.json`: unified crawler configuration for GitHub, public platforms, custom URLs, and local fixture tests
 - `strategies/`: saved strategy source code directory
 - `requirements.txt`: Python dependencies
@@ -402,3 +403,36 @@ Each strategy folder contains:
 - `article.md`: public article text from the BigQuant strategy page
 
 The current style labels include `multi_factor`, `machine_learning`, `etf_allocation`, `trend_momentum`, `convertible_bond`, `intraday`, `value_quality`, and `general`.
+
+## QuantConnect Leaderboard Scraper
+
+If you already have a list of QuantConnect leaderboard strategy URLs, put one URL per line in `strategies/quantconnect/webs`, then run:
+
+```bash
+python3 quantconnect_strategy_scraper.py \
+  --input-file strategies/quantconnect/webs \
+  --output-dir strategies/quantconnect \
+  --log-file logs/quantconnect_strategy_scraper.log \
+  --delay 1
+```
+
+The scraper saves each strategy under:
+
+```text
+strategies/quantconnect/{trading_style}/{strategy_title}_{strategy_id}/
+```
+
+Each strategy folder contains:
+
+- `metadata.json`: public QuantConnect strategy metadata, author information, tags, asset classes, and scrape status
+- `performance.json`: statistics summary and equity curve rows
+- `equity_curve.csv`: tabular equity curve series when QuantConnect exposes chart data
+- `summary.md`: readable summary with source URL, style, author, tags, and scrape notes
+
+QuantConnect exposes public metadata through its strategy APIs, but source project files require a logged-in session. To retry source code extraction, export a browser session cookie before running:
+
+```bash
+export QUANTCONNECT_COOKIE='your_logged_in_quantconnect_cookie'
+```
+
+Without `QUANTCONNECT_COOKIE`, the scraper records source code as `not_available` in `metadata.json` and still saves the public metadata and performance artifacts.
