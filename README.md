@@ -138,6 +138,7 @@ python stock_feature_pipeline.py \
 
 - `stock_feature_pipeline.py`: main data extraction and feature engineering script
 - `strategy_crawler.py`: public quantitative strategy crawler
+- `bigquant_strategy_scraper.py`: BigQuant strategy page scraper for known playground URLs
 - `crawler_config.json`: unified crawler configuration for GitHub, public platforms, custom URLs, and local fixture tests
 - `strategies/`: saved strategy source code directory
 - `requirements.txt`: Python dependencies
@@ -372,3 +373,32 @@ The crawler does not guarantee that a strategy is profitable. It scores code usi
 - Penalties for placeholder or low-quality patterns
 
 You can tune `quality.min_score` and `quality.min_lines` in `crawler_config.json`.
+
+## BigQuant Strategy Page Scraper
+
+If you already have a list of BigQuant strategy playground pages, put one URL per line in `strategies/BigQuant/webs`, then run:
+
+```bash
+python3 bigquant_strategy_scraper.py \
+  --input-file strategies/BigQuant/webs \
+  --output-dir strategies/BigQuant \
+  --log-file logs/bigquant_strategy_scraper.log \
+  --delay 1
+```
+
+The scraper saves each strategy under:
+
+```text
+strategies/BigQuant/{trading_style}/{strategy_title}_{uuid}/
+```
+
+Each strategy folder contains:
+
+- `strategy.py`: extracted BigQuant strategy code
+- `performance.json`: performance summary and raw daily return rows
+- `performance.csv`: tabular performance series
+- `summary.md`: readable summary with style and key return metrics
+- `metadata.json`: source URL, strategy ID, save status, and errors if any
+- `article.md`: public article text from the BigQuant strategy page
+
+The current style labels include `multi_factor`, `machine_learning`, `etf_allocation`, `trend_momentum`, `convertible_bond`, `intraday`, `value_quality`, and `general`.
