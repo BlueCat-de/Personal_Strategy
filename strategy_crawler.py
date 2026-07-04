@@ -85,7 +85,7 @@ LOW_QUALITY_PATTERNS = (
 TYPE_RULES = {
     "momentum": ("momentum", "breakout", "trend", "moving_average", "ma_cross", "rsi"),
     "mean_reversion": ("mean_reversion", "boll", "zscore", "reversion", "oversold", "overbought"),
-    "factor": ("factor", "alpha", "rank", "neutralize", "ic", "cross_section"),
+    "factor": ("factor", "alpha", "rank", "neutralize", "information_coefficient", "cross_section"),
     "pairs_trading": ("pair", "cointegration", "spread", "hedge_ratio"),
     "arbitrage": ("arbitrage", "market_making", "stat_arb"),
     "machine_learning": ("sklearn", "xgboost", "lightgbm", "lstm", "randomforest", "predict"),
@@ -316,10 +316,14 @@ class QualityScorer:
 
     @staticmethod
     def detect_strategy_type(normalized_code: str) -> str:
-        for strategy_type, keywords in TYPE_RULES.items():
-            if any(keyword in normalized_code for keyword in keywords):
-                return strategy_type
-        return "general"
+        type_scores = {
+            strategy_type: sum(1 for keyword in keywords if keyword in normalized_code)
+            for strategy_type, keywords in TYPE_RULES.items()
+        }
+        best_type, best_score = max(type_scores.items(), key=lambda item: item[1])
+        if best_score <= 0:
+            return "general"
+        return best_type
 
 
 class StrategySaver:
@@ -462,6 +466,8 @@ class StrategyCrawler:
             return self.iter_html_index_candidates(source)
         if source_type == "url_list":
             return self.iter_url_list_candidates(source)
+        if source_type == "local_fixture":
+            return self.iter_local_fixture_candidates(source)
         LOGGER.warning("Unsupported source type: %s", source_type)
         return []
 
@@ -572,9 +578,41 @@ class StrategyCrawler:
             )
         return candidates[: self.max_items_per_source]
 
+    def iter_local_fixture_candidates(self, source: dict[str, Any]) -> list[CrawlCandidate]:
+        name = source.get("name", "local_fixture")
+        fixture_path = Path(source["path"])
+        with fixture_path.open("r", encoding="utf-8") as file:
+            payload = json.load(file)
+
+        candidates: list[CrawlCandidate] = []
+        for index, item in enumerate(payload.get("strategies", []), start=1):
+            filename = item.get("name") or f"mock_strategy_{index}.py"
+            candidates.append(
+                CrawlCandidate(
+                    source_name=name,
+                    source_type="local_fixture",
+                    url=f"fixture://{fixture_path}#{index}",
+                    name=filename,
+                    content_url=f"fixture://{fixture_path}#{index}",
+                    repo_full_name=item.get("repo_full_name"),
+                    repo_stars=int(item.get("repo_stars", 0) or 0),
+                    repo_forks=int(item.get("repo_forks", 0) or 0),
+                    metadata={
+                        "fixture_path": str(fixture_path),
+                        "fixture_index": index,
+                        "declared_type": item.get("strategy_type"),
+                        "description": item.get("description"),
+                        "code": item.get("code", ""),
+                    },
+                )
+            )
+        return candidates[: self.max_items_per_source]
+
     def fetch_candidate_code(self, candidate: CrawlCandidate) -> str:
         if candidate.source_type == "github_code_search":
             return self.fetch_github_code(candidate)
+        if candidate.source_type == "local_fixture":
+            return str(candidate.metadata.get("code", ""))
         response = self.http.get(candidate.content_url or candidate.url)
         return response.text
 

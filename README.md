@@ -220,6 +220,27 @@ For a known list of public raw strategy URLs:
 
 ### Run the Crawler
 
+Run the built-in local fixture test without network access:
+
+```bash
+python strategy_crawler.py \
+  --config crawler_config.local_test.json \
+  --state-file .crawler_state/local_test_state.json \
+  --log-file logs/local_test_crawler.log \
+  --max-items 5
+```
+
+This reads `tests/fixtures/mock_strategies.json`, which contains 5 simulated strategy source files. Expected output:
+
+```text
+strategies/local_fixture/
+  factor/
+  machine_learning/
+  mean_reversion/
+  momentum/
+  pairs_trading/
+```
+
 Dry run without saving strategy files:
 
 ```bash
