@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 .DS_Store
+.env.local
 
 .crawler_state/
 logs/
