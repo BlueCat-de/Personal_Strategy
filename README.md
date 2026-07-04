@@ -2,7 +2,10 @@
 
 A-share stock data extraction and feature engineering toolkit for personal quantitative research.
 
-This project currently provides a Python pipeline based on `akshare` to fetch daily A-share market data, filter stocks that are not tradable for the current account setup, and generate machine-learning-ready features.
+This project currently provides:
+
+- A Python pipeline based on `akshare` to fetch daily A-share market data, filter stocks that are not tradable for the current account setup, and generate machine-learning-ready features.
+- A configurable crawler that searches public quantitative trading strategy source code, applies heuristic quality scoring, and saves accepted strategies under `strategies/`.
 
 > This repository is for data research only. It is not investment advice and should not be used as a standalone trading system.
 
@@ -45,8 +48,11 @@ Dependencies:
 - `akshare`
 - `pandas`
 - `numpy`
+- `requests`
+- `beautifulsoup4`
+- `urllib3`
 
-## Usage
+## Stock Feature Pipeline Usage
 
 Fetch features for specific stocks:
 
@@ -131,6 +137,161 @@ python stock_feature_pipeline.py \
 ## Current Files
 
 - `stock_feature_pipeline.py`: main data extraction and feature engineering script
+- `strategy_crawler.py`: public quantitative strategy crawler
+- `crawler_config.json`: crawler source and quality configuration
+- `strategies/`: saved strategy source code directory
 - `requirements.txt`: Python dependencies
 - `README.md`: project documentation
 
+## Strategy Crawler
+
+`strategy_crawler.py` crawls public quantitative strategy source code from configured sources. The default source is GitHub code search. A disabled `html_index` example is included in `crawler_config.json` for public index pages that you explicitly want to add.
+
+The crawler is designed for compliant public data collection:
+
+- Uses public APIs where possible
+- Respects `robots.txt` for normal web pages
+- Applies request delays and HTTP retries
+- Does not bypass login walls, captchas, paywalls, or access controls
+- Uses local state for resumable crawling and deduplication
+
+### Configure Sources
+
+Edit `crawler_config.json`:
+
+```json
+{
+  "crawler": {
+    "max_items": 50,
+    "max_items_per_source": 25,
+    "request_delay_seconds": 2.0,
+    "respect_robots_txt": true
+  },
+  "quality": {
+    "min_score": 45,
+    "min_lines": 60,
+    "allowed_extensions": [".py"]
+  }
+}
+```
+
+For GitHub, add or change search queries:
+
+```json
+{
+  "name": "github",
+  "type": "github_code_search",
+  "enabled": true,
+  "queries": [
+    "language:Python filename:.py backtrader strategy trading",
+    "language:Python filename:.py alpha factor backtest"
+  ]
+}
+```
+
+For a public index page:
+
+```json
+{
+  "name": "my_public_index",
+  "type": "html_index",
+  "enabled": true,
+  "url": "https://example.com/public-strategy-index/",
+  "allow_url_patterns": ["\\.py$", "strategy", "backtest"]
+}
+```
+
+For a known list of public raw strategy URLs:
+
+```json
+{
+  "name": "custom_public_urls",
+  "type": "url_list",
+  "enabled": true,
+  "urls": [
+    {
+      "url": "https://example.com/path/to/public_strategy.py",
+      "name": "public_strategy.py",
+      "platform": "example"
+    }
+  ]
+}
+```
+
+### Run the Crawler
+
+Dry run without saving strategy files:
+
+```bash
+python strategy_crawler.py --dry-run --max-items 10
+```
+
+Run and save accepted strategies:
+
+```bash
+python strategy_crawler.py --max-items 20
+```
+
+Use a GitHub token to increase API rate limits:
+
+```bash
+export GITHUB_TOKEN=your_github_token
+python strategy_crawler.py --max-items 50
+```
+
+Or pass it directly:
+
+```bash
+python strategy_crawler.py --github-token your_github_token --max-items 50
+```
+
+### Crawler Output
+
+Accepted strategy source files are saved by source and detected strategy type:
+
+```text
+strategies/
+  github/
+    momentum/
+      example_strategy.py
+    mean_reversion/
+      example_strategy.py
+```
+
+Each saved strategy also has a sidecar metadata file:
+
+```text
+example_strategy.py.meta.json
+```
+
+Metadata includes source URL, repository information, quality score, detected strategy type, content hash, and scoring reasons.
+
+### Logs and Resume State
+
+Crawler logs:
+
+```text
+logs/crawler.log
+```
+
+Resume and deduplication state:
+
+```text
+.crawler_state/state.json
+```
+
+If the crawler is interrupted, rerun the same command and it will skip URLs and content hashes already recorded in the state file.
+
+### Quality Scoring
+
+The crawler does not guarantee that a strategy is profitable. It scores code using explainable heuristics:
+
+- Non-empty code length
+- Strategy, signal, backtest, portfolio, risk, and performance keywords
+- Common framework names such as `backtrader`, `zipline`, `vnpy`, `rqalpha`, `jqdata`, `quantconnect`
+- Strategy lifecycle functions such as `initialize`, `handle_data`, `next`, `on_bar`, `rebalance`
+- GitHub stars and forks
+- Duplicate content hash filtering
+- Penalties for placeholder or low-quality patterns
+
+You can tune `quality.min_score` and `quality.min_lines` in `crawler_config.json`.

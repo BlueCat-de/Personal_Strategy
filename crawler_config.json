@@ -1,0 +1,58 @@
+{
+  "crawler": {
+    "max_items": 50,
+    "max_items_per_source": 25,
+    "request_delay_seconds": 2.0,
+    "timeout_seconds": 20,
+    "respect_robots_txt": true,
+    "user_agent": "PersonalStrategyCrawler/0.1 (+https://github.com/BlueCat-de/Personal_Strategy)"
+  },
+  "quality": {
+    "min_score": 45,
+    "min_lines": 60,
+    "allowed_extensions": [".py"]
+  },
+  "sources": [
+    {
+      "name": "github",
+      "type": "github_code_search",
+      "enabled": true,
+      "max_results_per_query": 20,
+      "queries": [
+        "language:Python filename:.py backtrader strategy trading",
+        "language:Python filename:.py zipline algorithm trading",
+        "language:Python filename:.py vnpy strategy",
+        "language:Python filename:.py rqalpha strategy",
+        "language:Python filename:.py quantconnect lean algorithm",
+        "language:Python filename:.py pair trading strategy",
+        "language:Python filename:.py mean reversion strategy backtest",
+        "language:Python filename:.py momentum strategy backtest",
+        "language:Python filename:.py alpha factor backtest"
+      ]
+    },
+    {
+      "name": "custom_public_index_example",
+      "type": "html_index",
+      "enabled": false,
+      "url": "https://example.com/public-strategy-index/",
+      "max_results": 20,
+      "allow_url_patterns": [
+        "\\.py$",
+        "strategy",
+        "backtest"
+      ]
+    },
+    {
+      "name": "custom_public_urls_example",
+      "type": "url_list",
+      "enabled": false,
+      "urls": [
+        {
+          "url": "https://example.com/path/to/public_strategy.py",
+          "name": "public_strategy.py",
+          "platform": "example"
+        }
+      ]
+    }
+  ]
+}
