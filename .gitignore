@@ -2,10 +2,16 @@ __pycache__/
 *.py[cod]
 .DS_Store
 .env.local
+.venv/
+lean_workspace/
 
 .crawler_state/
 logs/
 data/
 
-strategies/*
+strategies/**
 !strategies/.gitkeep
+!strategies/**/
+!strategies/akshare_strategy_runtime.py
+!strategies/AKSHARE_MIGRATION_SUMMARY.md
+!strategies/**/akshare_*.py
