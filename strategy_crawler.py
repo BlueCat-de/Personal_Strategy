@@ -914,6 +914,8 @@ def main() -> None:
         ]
         if not config["sources"]:
             raise SystemExit(f"No configured sources matched: {sorted(selected_sources)}")
+        for source in config["sources"]:
+            source["enabled"] = True
 
     crawler = StrategyCrawler(
         config=config,

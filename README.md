@@ -138,16 +138,14 @@ python stock_feature_pipeline.py \
 
 - `stock_feature_pipeline.py`: main data extraction and feature engineering script
 - `strategy_crawler.py`: public quantitative strategy crawler
-- `crawler_config.json`: crawler source and quality configuration
-- `crawler_config.platforms.json`: JoinQuant, RiceQuant, BigQuant, and QuantConnect public page crawler configuration
-- `crawler_config.local_test.json`: offline crawler fixture test configuration
+- `crawler_config.json`: unified crawler configuration for GitHub, public platforms, custom URLs, and local fixture tests
 - `strategies/`: saved strategy source code directory
 - `requirements.txt`: Python dependencies
 - `README.md`: project documentation
 
 ## Strategy Crawler
 
-`strategy_crawler.py` crawls public quantitative strategy source code from configured sources. The default source is GitHub code search. A disabled `html_index` example is included in `crawler_config.json` for public index pages that you explicitly want to add.
+`strategy_crawler.py` crawls public quantitative strategy source code from configured sources. All crawler sources are configured in `crawler_config.json`.
 
 The crawler is designed for compliant public data collection:
 
@@ -165,13 +163,13 @@ Edit `crawler_config.json`:
 {
   "crawler": {
     "max_items": 50,
-    "max_items_per_source": 25,
-    "request_delay_seconds": 2.0,
+    "max_items_per_source": 20,
+    "request_delay_seconds": 3.0,
     "respect_robots_txt": true
   },
   "quality": {
-    "min_score": 45,
-    "min_lines": 60,
+    "min_score": 35,
+    "min_lines": 20,
     "allowed_extensions": [".py"]
   }
 }
@@ -233,7 +231,7 @@ For public strategy article pages, use `web_strategy_pages`. This source type op
 }
 ```
 
-The repository includes `crawler_config.platforms.json` for public pages from:
+The unified config includes public page sources for:
 
 - `joinquant`
 - `ricequant`
@@ -257,7 +255,8 @@ Run the built-in local fixture test without network access:
 
 ```bash
 python strategy_crawler.py \
-  --config crawler_config.local_test.json \
+  --config crawler_config.json \
+  --sources local_fixture \
   --state-file .crawler_state/local_test_state.json \
   --log-file logs/local_test_crawler.log \
   --max-items 5
@@ -284,7 +283,7 @@ Dry run only QuantConnect public pages:
 
 ```bash
 python strategy_crawler.py \
-  --config crawler_config.platforms.json \
+  --config crawler_config.json \
   --sources quantconnect \
   --state-file .crawler_state/quantconnect_dry_run_state.json \
   --log-file logs/quantconnect_dry_run.log \
@@ -296,8 +295,8 @@ Run public platform page crawling and save accepted strategies:
 
 ```bash
 python strategy_crawler.py \
-  --config crawler_config.platforms.json \
-  --sources joinquant,bigquant,quantconnect \
+  --config crawler_config.json \
+  --sources bigquant,quantconnect \
   --output-dir strategies \
   --state-file .crawler_state/platforms_state.json \
   --log-file logs/platforms_crawler.log \

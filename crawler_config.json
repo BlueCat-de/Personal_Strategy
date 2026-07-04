@@ -1,15 +1,15 @@
 {
   "crawler": {
     "max_items": 50,
-    "max_items_per_source": 25,
-    "request_delay_seconds": 2.0,
-    "timeout_seconds": 20,
+    "max_items_per_source": 20,
+    "request_delay_seconds": 3.0,
+    "timeout_seconds": 25,
     "respect_robots_txt": true,
     "user_agent": "PersonalStrategyCrawler/0.1 (+https://github.com/BlueCat-de/Personal_Strategy)"
   },
   "quality": {
-    "min_score": 45,
-    "min_lines": 60,
+    "min_score": 35,
+    "min_lines": 20,
     "allowed_extensions": [".py"]
   },
   "sources": [
@@ -29,6 +29,89 @@
         "language:Python filename:.py momentum strategy backtest",
         "language:Python filename:.py alpha factor backtest"
       ]
+    },
+    {
+      "name": "joinquant",
+      "type": "web_strategy_pages",
+      "enabled": false,
+      "same_domain": true,
+      "max_pages": 12,
+      "max_candidates": 8,
+      "min_code_chars": 300,
+      "start_urls": [
+        "https://www.joinquant.com/community",
+        "https://www.joinquant.com/community/list?listType=1",
+        "https://www.joinquant.com/community/list?listType=2"
+      ],
+      "article_url_patterns": [
+        "joinquant\\.com/community",
+        "postId=",
+        "strategy"
+      ]
+    },
+    {
+      "name": "ricequant",
+      "type": "web_strategy_pages",
+      "enabled": false,
+      "same_domain": true,
+      "max_pages": 12,
+      "max_candidates": 8,
+      "min_code_chars": 300,
+      "start_urls": [
+        "https://www.ricequant.com/community/",
+        "https://www.ricequant.com/doc/rqalpha/"
+      ],
+      "article_url_patterns": [
+        "ricequant\\.com/community",
+        "ricequant\\.com/doc",
+        "rqalpha",
+        "strategy"
+      ]
+    },
+    {
+      "name": "bigquant",
+      "type": "web_strategy_pages",
+      "enabled": true,
+      "same_domain": true,
+      "max_pages": 12,
+      "max_candidates": 8,
+      "min_code_chars": 300,
+      "start_urls": [
+        "https://bigquant.com/wiki/collection/SkPzwuq9oo",
+        "https://bigquant.com/wiki/collection/dhj0C1Hfqz",
+        "https://bigquant.com/wiki/collection/QkFJ6ZCzEq"
+      ],
+      "article_url_patterns": [
+        "bigquant\\.com/wiki/doc/"
+      ]
+    },
+    {
+      "name": "quantconnect",
+      "type": "web_strategy_pages",
+      "enabled": true,
+      "same_domain": true,
+      "max_pages": 16,
+      "max_candidates": 10,
+      "min_code_chars": 300,
+      "start_urls": [
+        "https://www.quantconnect.com/tutorials",
+        "https://www.quantconnect.com/forum",
+        "https://www.quantconnect.com/docs/v2/writing-algorithms"
+      ],
+      "article_url_patterns": [
+        "quantconnect\\.com/tutorials",
+        "quantconnect\\.com/forum",
+        "quantconnect\\.com/docs",
+        "quantconnect\\.com/research",
+        "algorithm",
+        "strategy"
+      ]
+    },
+    {
+      "name": "local_fixture",
+      "type": "local_fixture",
+      "enabled": false,
+      "path": "tests/fixtures/mock_strategies.json"
     },
     {
       "name": "custom_public_index_example",
