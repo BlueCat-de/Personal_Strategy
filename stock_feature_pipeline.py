@@ -27,10 +27,12 @@ import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Sequence
 
 import numpy as np
 import pandas as pd
+
+from jqdata_provider import fetch_jq_daily_history, get_jq_a_share_universe
 
 
 LOGGER = logging.getLogger("stock_feature_pipeline")
@@ -44,8 +46,10 @@ class PipelineConfig:
     output_dir: Path = Path("data/features")
     sleep_seconds: float = 0.3
     exclude_chinext: bool = True
-    exclude_st: bool = False
+    exclude_star: bool = True
+    exclude_st: bool = True
     limit: int | None = None
+    data_sources: tuple[str, ...] = ("jqdata", "tencent", "eastmoney", "sina")
 
 
 AKSHARE_COLUMNS = {
@@ -61,7 +65,26 @@ AKSHARE_COLUMNS = {
     "涨跌幅": "pct_chg",
     "涨跌额": "change",
     "换手率": "turnover_rate",
+    "date": "trade_date",
+    "turnover": "turnover_rate",
 }
+
+
+STANDARD_HISTORY_COLUMNS = [
+    "trade_date",
+    "symbol",
+    "open",
+    "close",
+    "high",
+    "low",
+    "volume",
+    "amount",
+    "amplitude",
+    "pct_chg",
+    "change",
+    "turnover_rate",
+    "data_source",
+]
 
 
 def import_akshare():
@@ -83,14 +106,49 @@ def normalize_symbol(symbol: str) -> str:
     return symbol.zfill(6)
 
 
+def to_exchange_symbol(symbol: str) -> str:
+    """Convert a 6-digit code to exchange-prefixed format used by Tencent/Sina."""
+    symbol = normalize_symbol(symbol)
+    if symbol.startswith(("6", "9")):
+        return f"sh{symbol}"
+    if symbol.startswith(("0", "2", "3")):
+        return f"sz{symbol}"
+    if symbol.startswith(("4", "8")):
+        return f"bj{symbol}"
+    return symbol
+
+
 def is_chinext(symbol: str) -> bool:
     """创业板股票代码通常以 300 或 301 开头。"""
     symbol = normalize_symbol(symbol)
     return symbol.startswith(("300", "301"))
 
 
-def get_a_share_universe(exclude_chinext: bool = True, exclude_st: bool = False) -> pd.DataFrame:
+def is_star_market(symbol: str) -> bool:
+    """科创板股票代码通常以 688 或 689 开头。"""
+    symbol = normalize_symbol(symbol)
+    return symbol.startswith(("688", "689"))
+
+
+def get_a_share_universe(
+    exclude_chinext: bool = True,
+    exclude_star: bool = True,
+    exclude_st: bool = True,
+    source: str = "akshare",
+    date: str | None = None,
+) -> pd.DataFrame:
     """Fetch A-share stock universe and apply basic tradability filters."""
+    if source == "jqdata":
+        try:
+            return get_jq_a_share_universe(
+                date=date,
+                exclude_chinext=exclude_chinext,
+                exclude_star=exclude_star,
+                exclude_st=exclude_st,
+            )
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("Failed to fetch JQData universe, fallback to AkShare: %s", exc)
+
     ak = import_akshare()
     universe = ak.stock_info_a_code_name()
     universe = universe.rename(columns={"code": "symbol", "name": "name"})
@@ -99,13 +157,63 @@ def get_a_share_universe(exclude_chinext: bool = True, exclude_st: bool = False)
     if exclude_chinext:
         universe = universe[~universe["symbol"].map(is_chinext)]
 
+    if exclude_star:
+        universe = universe[~universe["symbol"].map(is_star_market)]
+
     if exclude_st:
         universe = universe[~universe["name"].astype(str).str.contains("ST", case=False, na=False)]
 
     return universe.reset_index(drop=True)
 
 
-def fetch_daily_history(symbol: str, start_date: str, end_date: str, adjust: str = "qfq") -> pd.DataFrame:
+def normalize_history_frame(raw: pd.DataFrame, symbol: str, data_source: str) -> pd.DataFrame:
+    """Normalize AkShare OHLCV outputs from EastMoney, Tencent, or Sina."""
+    if raw.empty:
+        return pd.DataFrame()
+
+    symbol = normalize_symbol(symbol)
+    df = raw.rename(columns=AKSHARE_COLUMNS).copy()
+
+    if data_source == "tencent":
+        # Tencent names its volume-like field "amount" and documents the unit as hands.
+        # Keep it as volume so technical indicators remain usable; monetary amount is unavailable.
+        if "volume" not in df.columns and "amount" in df.columns:
+            df["volume"] = df["amount"]
+            df["amount"] = pd.NA
+
+    df["symbol"] = symbol
+    df["data_source"] = data_source
+    df["trade_date"] = pd.to_datetime(df["trade_date"])
+
+    for col in STANDARD_HISTORY_COLUMNS:
+        if col not in df.columns:
+            df[col] = pd.NA
+
+    numeric_cols = [col for col in STANDARD_HISTORY_COLUMNS if col not in {"symbol", "trade_date", "data_source"}]
+    for col in numeric_cols:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    if data_source == "sina" and "turnover_rate" in df.columns:
+        # Sina turnover is a ratio; EastMoney is percentage-like. Normalize to percent.
+        turnover = pd.to_numeric(df["turnover_rate"], errors="coerce")
+        if turnover.dropna().le(1).all():
+            df["turnover_rate"] = turnover * 100
+
+    return (
+        df[STANDARD_HISTORY_COLUMNS]
+        .dropna(subset=["trade_date", "open", "high", "low", "close"])
+        .sort_values("trade_date")
+        .reset_index(drop=True)
+    )
+
+
+def fetch_daily_history(
+    symbol: str,
+    start_date: str,
+    end_date: str,
+    adjust: str = "qfq",
+    data_sources: Sequence[str] = ("jqdata", "tencent", "eastmoney", "sina"),
+) -> pd.DataFrame:
     """
     Fetch daily adjusted A-share OHLCV data from akshare.
 
@@ -114,30 +222,67 @@ def fetch_daily_history(symbol: str, start_date: str, end_date: str, adjust: str
         "qfq" : front-adjusted price, useful for most modeling tasks
         "hfq" : back-adjusted price
     """
-    ak = import_akshare()
     symbol = normalize_symbol(symbol)
-    raw = ak.stock_zh_a_hist(
-        symbol=symbol,
-        period="daily",
-        start_date=start_date,
-        end_date=end_date,
-        adjust=adjust,
-    )
+    ak = None
+    errors: list[str] = []
 
-    if raw.empty:
-        return pd.DataFrame()
+    for data_source in data_sources:
+        data_source = data_source.strip().lower()
+        try:
+            if data_source == "jqdata":
+                history = fetch_jq_daily_history(
+                    symbol=symbol,
+                    start_date=start_date,
+                    end_date=end_date,
+                    adjust=adjust,
+                )
+                if not history.empty:
+                    if errors:
+                        LOGGER.info("Fetched %s from jqdata after fallback errors: %s", symbol, "; ".join(errors))
+                    return history
+                errors.append("jqdata: empty response")
+                continue
 
-    df = raw.rename(columns=AKSHARE_COLUMNS)
-    keep_cols = [col for col in AKSHARE_COLUMNS.values() if col in df.columns]
-    df = df[keep_cols].copy()
-    df["symbol"] = symbol
-    df["trade_date"] = pd.to_datetime(df["trade_date"])
+            if ak is None:
+                ak = import_akshare()
 
-    numeric_cols = [col for col in df.columns if col not in {"symbol", "trade_date"}]
-    for col in numeric_cols:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
+            if data_source == "tencent":
+                raw = ak.stock_zh_a_hist_tx(
+                    symbol=to_exchange_symbol(symbol),
+                    start_date=start_date,
+                    end_date=end_date,
+                    adjust=adjust,
+                )
+            elif data_source == "eastmoney":
+                raw = ak.stock_zh_a_hist(
+                    symbol=symbol,
+                    period="daily",
+                    start_date=start_date,
+                    end_date=end_date,
+                    adjust=adjust,
+                )
+            elif data_source == "sina":
+                raw = ak.stock_zh_a_daily(
+                    symbol=to_exchange_symbol(symbol),
+                    start_date=start_date,
+                    end_date=end_date,
+                    adjust=adjust,
+                )
+            else:
+                errors.append(f"{data_source}: unsupported data source")
+                continue
 
-    return df.sort_values("trade_date").reset_index(drop=True)
+            history = normalize_history_frame(raw, symbol, data_source)
+            if not history.empty:
+                if errors:
+                    LOGGER.info("Fetched %s from %s after fallback errors: %s", symbol, data_source, "; ".join(errors))
+                return history
+            errors.append(f"{data_source}: empty response")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{data_source}: {exc}")
+
+    LOGGER.warning("No daily history for %s. Tried sources: %s", symbol, "; ".join(errors))
+    return pd.DataFrame()
 
 
 def add_time_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -283,12 +428,16 @@ def save_features_for_symbol(symbol: str, config: PipelineConfig) -> Path | None
     if config.exclude_chinext and is_chinext(symbol):
         LOGGER.info("Skip %s because it is a ChiNext stock.", symbol)
         return None
+    if config.exclude_star and is_star_market(symbol):
+        LOGGER.info("Skip %s because it is a STAR Market stock.", symbol)
+        return None
 
     history = fetch_daily_history(
         symbol=symbol,
         start_date=config.start_date,
         end_date=config.end_date,
         adjust=config.adjust,
+        data_sources=config.data_sources,
     )
     if history.empty:
         LOGGER.warning("No data returned for %s.", symbol)
@@ -315,9 +464,13 @@ def iter_symbols_from_args(args: argparse.Namespace) -> Iterable[str]:
         return
 
     if args.all_a:
+        universe_source = "jqdata" if "jqdata" in [source.strip().lower() for source in args.data_sources.split(",")] else "akshare"
         universe = get_a_share_universe(
             exclude_chinext=not args.include_chinext,
-            exclude_st=args.exclude_st,
+            exclude_star=not args.include_star,
+            exclude_st=not args.include_st,
+            source=universe_source,
+            date=args.end_date,
         )
         if args.limit:
             universe = universe.head(args.limit)
@@ -349,7 +502,18 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Include ChiNext stocks. Default is to exclude 300/301 codes.",
     )
-    parser.add_argument("--exclude-st", action="store_true", help="Exclude ST and *ST stocks.")
+    parser.add_argument(
+        "--include-star",
+        action="store_true",
+        help="Include STAR Market stocks. Default is to exclude 688/689 codes.",
+    )
+    parser.add_argument("--include-st", action="store_true", help="Include ST and *ST stocks. Default excludes them.")
+    parser.add_argument("--exclude-st", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--data-sources",
+        default="jqdata,tencent,eastmoney,sina",
+        help="Comma-separated A-share history sources in fallback order: jqdata,tencent,eastmoney,sina.",
+    )
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return parser.parse_args()
 
@@ -368,8 +532,10 @@ def main() -> None:
         output_dir=Path(args.output_dir),
         sleep_seconds=args.sleep_seconds,
         exclude_chinext=not args.include_chinext,
-        exclude_st=args.exclude_st,
+        exclude_star=not args.include_star,
+        exclude_st=not args.include_st,
         limit=args.limit,
+        data_sources=tuple(source.strip() for source in args.data_sources.split(",") if source.strip()),
     )
 
     symbols = list(iter_symbols_from_args(args))

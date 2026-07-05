@@ -1,14 +1,33 @@
+# Python / virtual environments
 __pycache__/
 *.py[cod]
-.DS_Store
-.env.local
+*.pyo
 .venv/
+venv/
+env/
+
+# OS / editor files
+.DS_Store
+.idea/
+.vscode/
+
+# Local secrets
+.env
+.env.*
+!.env.example
+
+# Runtime outputs
+data/
+logs/
+.crawler_state/
+
+# External research clones; keep the project code self-contained.
+akshare/
+akshare-stock-data-fetcher/
 lean_workspace/
 
-.crawler_state/
-logs/
-data/
-
+# Strategy crawler output can be large and noisy. Keep only curated AkShare
+# adapters and documentation under version control.
 strategies/**
 !strategies/.gitkeep
 !strategies/**/

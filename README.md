@@ -1,438 +1,234 @@
-# ai_native_strategy
+# Personal Strategy
 
-A-share data engineering, strategy crawling, and AI-native quantitative research toolkit.
+面向 A 股个人账户的量化研究项目。项目目标是用轻量 Python 工具完成数据获取、策略适配、离线回测和交易逻辑审计，重点贴近普通个人账户的真实约束，而不是追求复杂平台依赖。
 
-This project currently provides:
+> 本项目仅用于数据研究和策略验证，不构成投资建议，也不能直接作为自动交易系统使用。
 
-- A Python pipeline based on `akshare` to fetch daily A-share market data, filter stocks that are not tradable for the current account setup, and generate machine-learning-ready features.
-- A configurable crawler that searches public quantitative trading strategy source code, applies heuristic quality scoring, and saves accepted strategies under `strategies/`.
+## 核心能力
 
-> This repository is for data research only. It is not investment advice and should not be used as a standalone trading system.
+- 使用 AkShare / JQData 获取 A 股日线数据。
+- 生成统一格式的离线行情数据，供所有策略复用。
+- 将公开策略适配为轻量 `akshare_strategy.py`，移除 Lean、BigQuant、Backtrader 等重依赖。
+- 批量运行策略并输出收益、回撤、Sharpe、交易次数、手续费等指标。
+- 默认按个人 A 股账户约束回测：T+1、100 股整数手、45,000 元资金、手续费、滑点、涨跌停和容量约束。
+- 为 54 个策略生成 `.trae/skills` 入口和说明文档。
 
-## Features
+## 当前交易约束
 
-- Fetch daily A-share OHLCV data with `akshare`
-- Default front-adjusted price data using `qfq`
-- Automatically exclude ChiNext stocks by default, filtering stock codes starting with `300` or `301`
-- Optional exclusion of ST stocks
-- Generate one feature CSV per stock
-- Provide future-return labels for supervised learning experiments
+默认回测口径写在 `strategies/akshare_strategy_runtime.py`：
 
-## Feature Groups
+| 项目 | 默认值 |
+| --- | --- |
+| 初始资金 | `45,000` 元 |
+| 交易方向 | long-only，不做空 |
+| 最大仓位 | `100%` |
+| 信号执行 | T 日收盘信号，T+1 日执行 |
+| 执行价格 | 下一交易日 `open`，叠加滑点 |
+| 最小交易单位 | `100` 股 |
+| 滑点 | 单边 `0.1%` |
+| 成交容量 | 单日成交额 `0.5%` |
+| 涨跌停 | 9.5% 近似阈值，涨停禁买、跌停禁卖 |
+| 佣金 | `0.03%`，最低 `5` 元 |
+| 印花税 | 卖出 `0.1%` |
+| 过户费 | `0.001%` |
 
-The pipeline generates the following groups of fields:
+可用环境变量覆盖：
 
-- Basic market data: `open`, `close`, `high`, `low`, `volume`, `amount`, `amplitude`, `pct_chg`, `change`, `turnover_rate`
-- Moving averages: `ma5`, `ma10`, `ma20`, `ma60`
-- Price-to-MA gaps: `ma*_gap`
-- Volume moving averages: `volume_ma5`, `volume_ma10`, `volume_ma20`, `volume_ma60`
-- Momentum indicators: `rsi6`, `rsi12`, `rsi24`
-- Bollinger Bands: `boll_mid`, `boll_upper`, `boll_lower`, `boll_width`, `boll_position`
-- MACD: `macd_dif`, `macd_dea`, `macd_hist`
-- KDJ: `kdj_k`, `kdj_d`, `kdj_j`
-- Williams %R: `wr14`
-- Rolling statistics: return, volatility, trend strength, price position, high/low distance, volume change, volume z-score
-- Time features: year, month, quarter, day, weekday, day of year, month start/end flags
-- Supervised learning labels: `target_return_1d`, `target_return_5d`, `target_return_10d`, `target_up_1d`, `target_up_5d`, `target_up_10d`
+```bash
+AKSHARE_INITIAL_CASH=45000
+AKSHARE_LOT_SIZE=100
+AKSHARE_TRADE_DELAY_DAYS=1
+AKSHARE_T_PLUS_ONE=1
+AKSHARE_EXECUTION_PRICE_FIELD=open
+AKSHARE_SLIPPAGE_RATE=0.001
+AKSHARE_COMMISSION_RATE=0.0003
+AKSHARE_MIN_COMMISSION=5
+AKSHARE_STAMP_TAX_RATE=0.001
+AKSHARE_TRANSFER_FEE_RATE=0.00001
+```
 
-## Installation
+## 股票池约束
 
-Use Python 3.10+ if possible.
+默认排除：
+
+- 创业板：`300`、`301`
+- 科创板：`688`、`689`
+- 北交所：`4`、`8`、`920`
+- ST / *ST 股票
+
+这是为了匹配当前个人账户限制和风险偏好。
+
+## 安装
+
+建议使用 Python 3.10+：
 
 ```bash
 pip install -r requirements.txt
 ```
 
-Dependencies:
+主要依赖：
 
 - `akshare`
+- `jqdatasdk`
 - `pandas`
 - `numpy`
 - `requests`
 - `beautifulsoup4`
-- `urllib3`
 
-## Stock Feature Pipeline Usage
+## JQData 配置
 
-Fetch features for specific stocks:
-
-```bash
-python stock_feature_pipeline.py \
-  --symbols 002460,000001,600519 \
-  --start-date 20230101 \
-  --end-date 20260704
-```
-
-Fetch all A-share stocks after default filters:
+如需使用 JQData，把账号信息写到本地 `.env.local`。该文件已被 `.gitignore` 忽略，不会提交。
 
 ```bash
-python stock_feature_pipeline.py \
-  --all-a \
-  --start-date 20230101 \
-  --end-date 20260704
+JQDATA_USERNAME=你的账号
+JQDATA_PASSWORD=你的密码
 ```
 
-Limit the number of stocks during testing:
+检查账号状态：
 
 ```bash
-python stock_feature_pipeline.py \
-  --all-a \
-  --start-date 20230101 \
-  --end-date 20260704 \
-  --limit 50
+python jqdata_a_share_data.py status
 ```
 
-Exclude ST stocks as well:
+拉取单只股票：
 
 ```bash
-python stock_feature_pipeline.py \
-  --all-a \
-  --start-date 20230101 \
-  --end-date 20260704 \
-  --exclude-st
+python jqdata_a_share_data.py history \
+  --symbol 002460 \
+  --start-date 20250101 \
+  --end-date 20260403
 ```
 
-Include ChiNext stocks if your account can trade them:
+## 生成离线数据
+
+推荐使用 JQData 生成统一离线数据：
 
 ```bash
-python stock_feature_pipeline.py \
-  --all-a \
-  --start-date 20230101 \
-  --end-date 20260704 \
-  --include-chinext
+python jqdata_a_share_data.py offline \
+  --output-dir data/offline/a_share_12m_jqdata \
+  --months 12 \
+  --warmup-days 180 \
+  --overwrite
 ```
 
-## Output
-
-By default, CSV files are written to:
+也可以使用多源 fallback：
 
 ```bash
-data/features/
+python generate_offline_a_share_data.py \
+  --output-dir data/offline/a_share_12m \
+  --months 12 \
+  --warmup-days 180 \
+  --data-sources jqdata,tencent,eastmoney,sina \
+  --sleep-seconds 0.5 \
+  --overwrite
 ```
 
-Each stock produces one file:
+离线数据格式：
 
 ```text
-data/features/002460_features.csv
+data/offline/<dataset>/
+  manifest.json
+  universe.csv
+  prices_long.csv
+  symbols/{symbol}.csv
 ```
 
-You can change the output path:
-
-```bash
-python stock_feature_pipeline.py \
-  --symbols 002460 \
-  --start-date 20230101 \
-  --end-date 20260704 \
-  --output-dir data/generation_001
-```
-
-## Important Modeling Notes
-
-- Do not train with `target_*` columns as input features. They are labels and contain future information.
-- Use time-based train, validation, and test splits. Random splitting can cause leakage in financial time-series tasks.
-- Backtest with transaction costs, slippage, suspension days, limit-up/limit-down constraints, and realistic position sizing.
-- A high prediction accuracy does not necessarily imply positive returns. Evaluate risk-adjusted return, drawdown, turnover, and stability across market regimes.
-- For personal investing, this pipeline is better used for screening and risk monitoring than for direct buy/sell automation.
-
-## Current Files
-
-- `stock_feature_pipeline.py`: main data extraction and feature engineering script
-- `strategy_crawler.py`: public quantitative strategy crawler
-- `bigquant_strategy_scraper.py`: BigQuant strategy page scraper for known playground URLs
-- `quantconnect_strategy_scraper.py`: QuantConnect leaderboard strategy metadata scraper
-- `crawler_config.json`: unified crawler configuration for GitHub, public platforms, custom URLs, and local fixture tests
-- `strategies/`: saved strategy source code directory
-- `requirements.txt`: Python dependencies
-- `README.md`: project documentation
-
-## Strategy Crawler
-
-`strategy_crawler.py` crawls public quantitative strategy source code from configured sources. All crawler sources are configured in `crawler_config.json`.
-
-The crawler is designed for compliant public data collection:
-
-- Uses public APIs where possible
-- Respects `robots.txt` for normal web pages
-- Applies request delays and HTTP retries
-- Does not bypass login walls, captchas, paywalls, or access controls
-- Uses local state for resumable crawling and deduplication
-
-### Configure Sources
-
-Edit `crawler_config.json`:
-
-```json
-{
-  "crawler": {
-    "max_items": 50,
-    "max_items_per_source": 20,
-    "request_delay_seconds": 3.0,
-    "respect_robots_txt": true
-  },
-  "quality": {
-    "min_score": 35,
-    "min_lines": 20,
-    "allowed_extensions": [".py"]
-  }
-}
-```
-
-For GitHub, add or change search queries:
-
-```json
-{
-  "name": "github",
-  "type": "github_code_search",
-  "enabled": true,
-  "queries": [
-    "language:Python filename:.py backtrader strategy trading",
-    "language:Python filename:.py alpha factor backtest"
-  ]
-}
-```
-
-For a public index page:
-
-```json
-{
-  "name": "my_public_index",
-  "type": "html_index",
-  "enabled": true,
-  "url": "https://example.com/public-strategy-index/",
-  "allow_url_patterns": ["\\.py$", "strategy", "backtest"]
-}
-```
-
-For a known list of public raw strategy URLs:
-
-```json
-{
-  "name": "custom_public_urls",
-  "type": "url_list",
-  "enabled": true,
-  "urls": [
-    {
-      "url": "https://example.com/path/to/public_strategy.py",
-      "name": "public_strategy.py",
-      "platform": "example"
-    }
-  ]
-}
-```
-
-For public strategy article pages, use `web_strategy_pages`. This source type opens public index/tutorial/community pages, discovers matching article links, extracts Python-like code blocks from `pre`/`code` HTML nodes, then applies the normal quality filter.
-
-```json
-{
-  "name": "quantconnect",
-  "type": "web_strategy_pages",
-  "enabled": true,
-  "same_domain": true,
-  "start_urls": ["https://www.quantconnect.com/docs/v2/writing-algorithms"],
-  "article_url_patterns": ["quantconnect\\.com/docs", "algorithm", "strategy"]
-}
-```
-
-The unified config includes public page sources for:
-
-- `joinquant`
-- `ricequant`
-- `bigquant`
-- `quantconnect`
-
-These sources respect `robots.txt`. If a site disallows crawling, the crawler logs the skip and continues with other sources.
-
-Current platform status from dry-run checks:
-
-| Source | Status | Notes |
-| --- | --- | --- |
-| `quantconnect` | Works | Public docs pages expose extractable code blocks. |
-| `bigquant` | Works after config narrowing | The config starts from wiki collection pages and discovers `/wiki/doc/` article pages. |
-| `joinquant` | Limited | Public community entry pages are client-rendered and static HTML does not expose article links or code blocks. Browser rendering or a documented public API is needed for reliable crawling. |
-| `ricequant` | Blocked by robots.txt | The configured public paths are disallowed by robots.txt, so the crawler skips them. |
-
-### Run the Crawler
-
-Run the built-in local fixture test without network access:
-
-```bash
-python strategy_crawler.py \
-  --config crawler_config.json \
-  --sources local_fixture \
-  --state-file .crawler_state/local_test_state.json \
-  --log-file logs/local_test_crawler.log \
-  --max-items 5
-```
-
-This reads `tests/fixtures/mock_strategies.json`, which contains 5 simulated strategy source files. Expected output:
+单票行情字段：
 
 ```text
-strategies/local_fixture/
-  factor/
-  machine_learning/
-  mean_reversion/
-  momentum/
-  pairs_trading/
+date,symbol,open,high,low,close,volume,amount,turnover
 ```
 
-Dry run without saving strategy files:
+## 运行批量回测
+
+当前推荐命令：
 
 ```bash
-python strategy_crawler.py --dry-run --max-items 10
+python batch_strategy_backtest.py \
+  --data-dir data/offline/a_share_12m_jqdata \
+  --output-dir data/backtests/jqdata_12m_realistic_tplus1_weekly_open_restore_45k_no_single_symbol \
+  --universe-mode adaptive \
+  --workers 2 \
+  --timeout 1800
 ```
 
-Dry run only QuantConnect public pages:
-
-```bash
-python strategy_crawler.py \
-  --config crawler_config.json \
-  --sources quantconnect \
-  --state-file .crawler_state/quantconnect_dry_run_state.json \
-  --log-file logs/quantconnect_dry_run.log \
-  --dry-run \
-  --max-items 1
-```
-
-Run public platform page crawling and save accepted strategies:
-
-```bash
-python strategy_crawler.py \
-  --config crawler_config.json \
-  --sources bigquant,quantconnect \
-  --output-dir strategies \
-  --state-file .crawler_state/platforms_state.json \
-  --log-file logs/platforms_crawler.log \
-  --max-items 10
-```
-
-Run and save accepted strategies:
-
-```bash
-python strategy_crawler.py --max-items 20
-```
-
-Use a GitHub token to increase API rate limits:
-
-```bash
-export GITHUB_TOKEN=your_github_token
-python strategy_crawler.py --max-items 50
-```
-
-Or pass it directly:
-
-```bash
-python strategy_crawler.py --github-token your_github_token --max-items 50
-```
-
-### Crawler Output
-
-Accepted strategy source files are saved by source and detected strategy type:
+输出：
 
 ```text
-strategies/
-  github/
-    momentum/
-      example_strategy.py
-    mean_reversion/
-      example_strategy.py
+data/backtests/<run_name>/
+  REPORT.md
+  summary.csv
+  summary.json
+  run_config.json
+  excluded_single_symbol_strategies.csv
+  {strategy_skill}/
+    akshare_equity_curve.csv
+    akshare_target_weights.csv
+    akshare_trades.csv
+    akshare_summary.json
 ```
 
-Each saved strategy also has a sidecar metadata file:
+## 运行单个策略
 
-```text
-example_strategy.py.meta.json
-```
-
-Metadata includes source URL, repository information, quality score, detected strategy type, content hash, and scoring reasons.
-
-### Logs and Resume State
-
-Crawler logs:
-
-```text
-logs/crawler.log
-```
-
-Resume and deduplication state:
-
-```text
-.crawler_state/state.json
-```
-
-If the crawler is interrupted, rerun the same command and it will skip URLs and content hashes already recorded in the state file.
-
-### Quality Scoring
-
-The crawler does not guarantee that a strategy is profitable. It scores code using explainable heuristics:
-
-- Non-empty code length
-- Strategy, signal, backtest, portfolio, risk, and performance keywords
-- Common framework names such as `backtrader`, `zipline`, `vnpy`, `rqalpha`, `jqdata`, `quantconnect`
-- Strategy lifecycle functions such as `initialize`, `handle_data`, `next`, `on_bar`, `rebalance`
-- GitHub stars and forks
-- Duplicate content hash filtering
-- Penalties for placeholder or low-quality patterns
-
-You can tune `quality.min_score` and `quality.min_lines` in `crawler_config.json`.
-
-## BigQuant Strategy Page Scraper
-
-If you already have a list of BigQuant strategy playground pages, put one URL per line in `strategies/BigQuant/webs`, then run:
+示例：
 
 ```bash
-python3 bigquant_strategy_scraper.py \
-  --input-file strategies/BigQuant/webs \
-  --output-dir strategies/BigQuant \
-  --log-file logs/bigquant_strategy_scraper.log \
-  --delay 1
+AKSHARE_OFFLINE_DATA_DIR=data/offline/a_share_12m_jqdata \
+python .trae/skills/strategy-bigquant-multi-factor-17ed5d18/strategy.py \
+  --start-date 20250403 \
+  --end-date 20260403 \
+  --output-dir data/backtests/single_strategy_smoke
 ```
 
-The scraper saves each strategy under:
+## 当前重要文档
+
+- `TRADE_LOGIC_DOCUMENTATION.md`：当前回测系统的完整交易逻辑文档。
+- `ORIGINAL_RESTORE_AUDIT.md`：47 个有效策略的原始还原/代理复现审计。
+- `strategies/AKSHARE_MIGRATION_SUMMARY.md`：策略迁移到 AkShare runtime 的摘要。
+- `.trae/skills/STRATEGY_SKILLS_INDEX.md`：54 个策略 skill 索引。
+
+## 策略还原说明
+
+当前策略分三类：
+
+1. **已还原**：公开源码完整，已按原始核心信号实现。
+2. **部分还原**：信号或交易规则可还原，但资产池、平台数据或 A 股限制导致结果不完全等同原策略。
+3. **代理复现**：原策略依赖 BigQuant 私有因子表、QuantConnect 基本面字段或缺失源码，只能用本地可得因子近似。
+
+因此，批量回测结果只能说明“当前本地实现”在当前数据和撮合模型下的表现，不能简单等同于原始平台策略表现。
+
+## 当前已知限制
+
+- 仍是日线级回测，不模拟分钟级或逐笔成交。
+- 涨跌停判断仍是日线近似，不是真实排队成交概率。
+- 止损止盈只在部分技术策略中实现，且按收盘信号、下一交易日执行。
+- 多空策略在 long-only 账户下会被改写，不能代表原始多空收益。
+- JQData 12 个月样本较短，统计显著性有限。
+- 多数 BigQuant 策略由于私有因子缺失，仍属于代理复现。
+
+## 目录说明
 
 ```text
-strategies/BigQuant/{trading_style}/{strategy_title}_{uuid}/
+.
+├── stock_feature_pipeline.py          # A 股特征工程
+├── generate_offline_a_share_data.py   # 多源 fallback 离线数据生成
+├── jqdata_provider.py                 # JQData provider
+├── jqdata_a_share_data.py             # JQData CLI
+├── batch_strategy_backtest.py         # 批量回测入口
+├── strategies/                        # AkShare 策略适配脚本
+├── .trae/skills/                      # 策略 skill 文档和入口
+├── TRADE_LOGIC_DOCUMENTATION.md       # 交易逻辑文档
+└── ORIGINAL_RESTORE_AUDIT.md          # 策略还原审计
 ```
 
-Each strategy folder contains:
+## Git 忽略规则
 
-- `strategy.py`: extracted BigQuant strategy code
-- `performance.json`: performance summary and raw daily return rows
-- `performance.csv`: tabular performance series
-- `summary.md`: readable summary with style and key return metrics
-- `metadata.json`: source URL, strategy ID, save status, and errors if any
-- `article.md`: public article text from the BigQuant strategy page
+不会提交以下内容：
 
-The current style labels include `multi_factor`, `machine_learning`, `etf_allocation`, `trend_momentum`, `convertible_bond`, `intraday`, `value_quality`, and `general`.
+- `.env.local` 等本地密钥
+- `data/` 离线数据和回测结果
+- `logs/` 日志
+- `.crawler_state/` 爬虫状态
+- 外部调研 clone：`akshare/`、`akshare-stock-data-fetcher/`
 
-## QuantConnect Leaderboard Scraper
-
-If you already have a list of QuantConnect leaderboard strategy URLs, put one URL per line in `strategies/quantconnect/webs`, then run:
-
-```bash
-python3 quantconnect_strategy_scraper.py \
-  --input-file strategies/quantconnect/webs \
-  --output-dir strategies/quantconnect \
-  --log-file logs/quantconnect_strategy_scraper.log \
-  --delay 1
-```
-
-The scraper saves each strategy under:
-
-```text
-strategies/quantconnect/{trading_style}/{strategy_title}_{strategy_id}/
-```
-
-Each strategy folder contains:
-
-- `metadata.json`: public QuantConnect strategy metadata, author information, tags, asset classes, and scrape status
-- `performance.json`: statistics summary and equity curve rows
-- `equity_curve.csv`: tabular equity curve series when QuantConnect exposes chart data
-- `summary.md`: readable summary with source URL, style, author, tags, and scrape notes
-
-QuantConnect exposes public metadata through its strategy APIs, but source project files require a logged-in session. To retry source code extraction, export a browser session cookie before running:
-
-```bash
-export QUANTCONNECT_COOKIE='your_logged_in_quantconnect_cookie'
-```
-
-Without `QUANTCONNECT_COOKIE`, the scraper records source code as `not_available` in `metadata.json` and still saves the public metadata and performance artifacts.
+这些文件都可以在本地重新生成。
