@@ -28,6 +28,7 @@ from stock_feature_pipeline import (
     fetch_daily_history,
     get_a_share_universe,
     is_chinext,
+    is_bse,
     is_star_market,
     normalize_symbol,
 )
@@ -58,6 +59,7 @@ class OfflineDataConfig:
     sleep_seconds: float
     exclude_chinext: bool
     exclude_star: bool
+    exclude_bse: bool
     exclude_st: bool
     limit: int | None
     write_combined: bool
@@ -105,6 +107,7 @@ def load_universe(config: OfflineDataConfig) -> pd.DataFrame:
     universe = get_a_share_universe(
         exclude_chinext=config.exclude_chinext,
         exclude_star=config.exclude_star,
+        exclude_bse=config.exclude_bse,
         exclude_st=config.exclude_st,
         source=universe_source,
         date=config.test_end_date,
@@ -115,6 +118,8 @@ def load_universe(config: OfflineDataConfig) -> pd.DataFrame:
         universe = universe[~universe["symbol"].map(is_chinext)]
     if config.exclude_star:
         universe = universe[~universe["symbol"].map(is_star_market)]
+    if config.exclude_bse:
+        universe = universe[~universe["symbol"].map(is_bse)]
 
     universe = universe.drop_duplicates("symbol").sort_values("symbol").reset_index(drop=True)
     if config.limit:
@@ -210,7 +215,7 @@ def write_combined_csv(config: OfflineDataConfig, symbol_records: list[dict]) ->
             continue
         path = Path(record["path"])
         if path.exists():
-            frames.append(pd.read_csv(path))
+            frames.append(pd.read_csv(path, dtype={"symbol": str}))
 
     if not frames:
         LOGGER.warning("No symbol CSV files available for combined output.")
@@ -290,6 +295,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, help="Limit symbols for smoke testing.")
     parser.add_argument("--include-chinext", action="store_true", help="Include ChiNext 300/301 stocks.")
     parser.add_argument("--include-star", action="store_true", help="Include STAR Market 688/689 stocks.")
+    parser.add_argument("--include-bse", action="store_true", help="Include Beijing Stock Exchange 4/8/920 stocks.")
     parser.add_argument("--include-st", action="store_true", help="Include ST and *ST stocks. Default excludes them.")
     parser.add_argument("--exclude-st", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--no-combined", action="store_true", help="Do not write prices_long.csv.")
@@ -323,6 +329,7 @@ def main() -> None:
         sleep_seconds=args.sleep_seconds,
         exclude_chinext=not args.include_chinext,
         exclude_star=not args.include_star,
+        exclude_bse=not args.include_bse,
         exclude_st=not args.include_st,
         limit=args.limit,
         write_combined=not args.no_combined,

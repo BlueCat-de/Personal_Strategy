@@ -139,7 +139,7 @@ def realistic_backtest_settings() -> dict[str, float | bool]:
         "max_gross_exposure": float_env("AKSHARE_MAX_GROSS_EXPOSURE", 1.0),
         "limit_threshold": float_env("AKSHARE_LIMIT_THRESHOLD", 0.095),
         "slippage_rate": float_env("AKSHARE_SLIPPAGE_RATE", 0.001),
-        "max_participation": float_env("AKSHARE_MAX_PARTICIPATION", 0.005),
+        "max_participation": float_env("AKSHARE_MAX_PARTICIPATION", 0.0),
         "trade_delay_days": float_env("AKSHARE_TRADE_DELAY_DAYS", 1.0),
         "t_plus_one": bool_env("AKSHARE_T_PLUS_ONE", True),
         "lot_size": int_env("AKSHARE_LOT_SIZE", 100),

@@ -15,15 +15,18 @@ env/
 .env
 .env.*
 !.env.example
+.feishu_webhook
 
 # Runtime outputs
 data/
 logs/
+run/
 .crawler_state/
 
 # External research clones; keep the project code self-contained.
 akshare/
 akshare-stock-data-fetcher/
+akshare-proxy-patch/
 lean_workspace/
 
 # Strategy crawler output can be large and noisy. Keep only curated AkShare
@@ -34,3 +37,4 @@ strategies/**
 !strategies/akshare_strategy_runtime.py
 !strategies/AKSHARE_MIGRATION_SUMMARY.md
 !strategies/**/akshare_*.py
+!strategies/ai_native/**

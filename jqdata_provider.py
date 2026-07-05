@@ -68,13 +68,18 @@ def to_jq_symbol(symbol: str) -> str:
     symbol = normalize_symbol(symbol)
     if symbol.endswith((".XSHG", ".XSHE", ".XBEI")):
         return symbol
+    if is_bse(symbol):
+        return f"{symbol}.XBEI"
     if symbol.startswith(("6", "9")):
         return f"{symbol}.XSHG"
     if symbol.startswith(("0", "2", "3")):
         return f"{symbol}.XSHE"
-    if symbol.startswith(("4", "8")):
-        return f"{symbol}.XBEI"
     return symbol
+
+
+def is_bse(symbol: str) -> bool:
+    symbol = normalize_symbol(symbol)
+    return symbol.startswith(("4", "8", "920"))
 
 
 def from_jq_symbol(symbol: str) -> str:
@@ -159,6 +164,7 @@ def get_jq_a_share_universe(
     date: str | None = None,
     exclude_chinext: bool = True,
     exclude_star: bool = True,
+    exclude_bse: bool = True,
     exclude_st: bool = True,
 ) -> pd.DataFrame:
     jq = auth_jqdata()
@@ -176,6 +182,8 @@ def get_jq_a_share_universe(
         df = df[~df["symbol"].str.startswith(("300", "301"))]
     if exclude_star:
         df = df[~df["symbol"].str.startswith(("688", "689"))]
+    if exclude_bse:
+        df = df[~df["symbol"].map(is_bse)]
     if exclude_st and "name" in df.columns:
         df = df[~df["name"].astype(str).str.contains("ST", case=False, na=False)]
     keep = [col for col in ["symbol", "name", "jq_symbol", "start_date", "end_date", "type"] if col in df.columns]

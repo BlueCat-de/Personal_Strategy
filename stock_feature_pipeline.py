@@ -47,6 +47,7 @@ class PipelineConfig:
     sleep_seconds: float = 0.3
     exclude_chinext: bool = True
     exclude_star: bool = True
+    exclude_bse: bool = True
     exclude_st: bool = True
     limit: int | None = None
     data_sources: tuple[str, ...] = ("jqdata", "tencent", "eastmoney", "sina")
@@ -109,12 +110,12 @@ def normalize_symbol(symbol: str) -> str:
 def to_exchange_symbol(symbol: str) -> str:
     """Convert a 6-digit code to exchange-prefixed format used by Tencent/Sina."""
     symbol = normalize_symbol(symbol)
+    if is_bse(symbol):
+        return f"bj{symbol}"
     if symbol.startswith(("6", "9")):
         return f"sh{symbol}"
     if symbol.startswith(("0", "2", "3")):
         return f"sz{symbol}"
-    if symbol.startswith(("4", "8")):
-        return f"bj{symbol}"
     return symbol
 
 
@@ -130,9 +131,16 @@ def is_star_market(symbol: str) -> bool:
     return symbol.startswith(("688", "689"))
 
 
+def is_bse(symbol: str) -> bool:
+    """北交所股票代码通常以 4、8 或 920 开头。"""
+    symbol = normalize_symbol(symbol)
+    return symbol.startswith(("4", "8", "920"))
+
+
 def get_a_share_universe(
     exclude_chinext: bool = True,
     exclude_star: bool = True,
+    exclude_bse: bool = True,
     exclude_st: bool = True,
     source: str = "akshare",
     date: str | None = None,
@@ -144,6 +152,7 @@ def get_a_share_universe(
                 date=date,
                 exclude_chinext=exclude_chinext,
                 exclude_star=exclude_star,
+                exclude_bse=exclude_bse,
                 exclude_st=exclude_st,
             )
         except Exception as exc:  # noqa: BLE001
@@ -159,6 +168,9 @@ def get_a_share_universe(
 
     if exclude_star:
         universe = universe[~universe["symbol"].map(is_star_market)]
+
+    if exclude_bse:
+        universe = universe[~universe["symbol"].map(is_bse)]
 
     if exclude_st:
         universe = universe[~universe["name"].astype(str).str.contains("ST", case=False, na=False)]
@@ -431,6 +443,9 @@ def save_features_for_symbol(symbol: str, config: PipelineConfig) -> Path | None
     if config.exclude_star and is_star_market(symbol):
         LOGGER.info("Skip %s because it is a STAR Market stock.", symbol)
         return None
+    if config.exclude_bse and is_bse(symbol):
+        LOGGER.info("Skip %s because it is a BSE stock.", symbol)
+        return None
 
     history = fetch_daily_history(
         symbol=symbol,
@@ -468,6 +483,7 @@ def iter_symbols_from_args(args: argparse.Namespace) -> Iterable[str]:
         universe = get_a_share_universe(
             exclude_chinext=not args.include_chinext,
             exclude_star=not args.include_star,
+            exclude_bse=not args.include_bse,
             exclude_st=not args.include_st,
             source=universe_source,
             date=args.end_date,
@@ -507,6 +523,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Include STAR Market stocks. Default is to exclude 688/689 codes.",
     )
+    parser.add_argument(
+        "--include-bse",
+        action="store_true",
+        help="Include Beijing Stock Exchange stocks. Default is to exclude 4/8/920 codes.",
+    )
     parser.add_argument("--include-st", action="store_true", help="Include ST and *ST stocks. Default excludes them.")
     parser.add_argument("--exclude-st", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
@@ -533,6 +554,7 @@ def main() -> None:
         sleep_seconds=args.sleep_seconds,
         exclude_chinext=not args.include_chinext,
         exclude_star=not args.include_star,
+        exclude_bse=not args.include_bse,
         exclude_st=not args.include_st,
         limit=args.limit,
         data_sources=tuple(source.strip() for source in args.data_sources.split(",") if source.strip()),
