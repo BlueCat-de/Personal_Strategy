@@ -298,7 +298,9 @@ def build_feishu_message(summary: dict) -> str:
 
     if status == "skipped_no_today_data":
         lines.append(f"数据最新日期：{summary.get('latest_data_date', '-')}")
-        lines.append("结论：不运行策略，避免基于旧数据生成交易信号。")
+        if summary.get("data_ready_deadline"):
+            lines.append(f"等待截止时间：{summary.get('data_ready_deadline')}")
+        lines.append("结论：截至等待截止时间仍未取得今日数据，不运行策略，避免基于旧数据生成交易信号。")
         return "\n".join(lines)
     if status == "failed":
         lines.append(f"错误：{summary.get('error', '-')}")
@@ -424,13 +426,53 @@ def should_run_today(run_at: str, last_run_date: str | None, now: pd.Timestamp |
     return now >= target and last_run_date != today
 
 
+def deadline_reached(deadline: str, now: pd.Timestamp | None = None) -> bool:
+    now = now or pd.Timestamp.now()
+    hour, minute = [int(part) for part in deadline.split(":", 1)]
+    target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    return now >= target
+
+
 def run_daemon(args: argparse.Namespace) -> None:
-    LOGGER.info("Daily strategy daemon started; run_at=%s", args.run_at)
+    LOGGER.info(
+        "Daily strategy daemon started; run_at=%s data_ready_deadline=%s retry_seconds=%s",
+        args.run_at,
+        args.data_ready_deadline,
+        args.data_ready_retry_seconds,
+    )
     last_run_date: str | None = None
     while True:
         now = pd.Timestamp.now()
         if should_run_today(args.run_at, last_run_date, now):
             args.end_date = yyyymmdd(now.normalize())
+            latest_data_date = latest_dataset_date(Path(args.data_dir))
+            if latest_data_date != args.end_date and not args.allow_stale_data:
+                if not deadline_reached(args.data_ready_deadline, now):
+                    LOGGER.info(
+                        "Data is not ready for %s yet; latest_data_date=%s; retry in %s seconds until %s.",
+                        args.end_date,
+                        latest_data_date,
+                        args.data_ready_retry_seconds,
+                        args.data_ready_deadline,
+                    )
+                    time.sleep(max(60.0, float(args.data_ready_retry_seconds)))
+                    continue
+
+                output_dir = Path(args.output_base_dir) / args.end_date
+                summary = {
+                    "status": "skipped_no_today_data",
+                    "target_date": args.end_date,
+                    "latest_data_date": latest_data_date,
+                    "output_dir": str(output_dir),
+                    "data_ready_deadline": args.data_ready_deadline,
+                }
+                write_summary(output_dir, summary)
+                LOGGER.warning("Data was not ready before deadline; summary=%s", summary)
+                send_summary(args, summary)
+                last_run_date = args.end_date
+                time.sleep(60)
+                continue
+
             try:
                 summary = run_once(args)
                 LOGGER.info("Strategy summary: %s", summary)
@@ -467,6 +509,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--daemon", action="store_true")
     parser.add_argument("--run-at", default="16:50", help="Daemon run time in HH:MM.")
+    parser.add_argument("--data-ready-retry-seconds", type=int, default=300, help="Retry interval when target-date data is not ready.")
+    parser.add_argument("--data-ready-deadline", default="20:30", help="Latest HH:MM to wait for target-date data before sending a skip alert.")
     parser.add_argument("--lock-file", default=str(REPO_ROOT / "run/daily_strategy_signal.lock"))
     parser.add_argument("--log-file", default=str(REPO_ROOT / "logs/daily_strategy_signal.log"))
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])

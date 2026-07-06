@@ -269,13 +269,13 @@ python3 update_offline_a_share_daily.py \
 
 ## 8. 每日策略检查后台部署
 
-取数任务建议在 `16:30` 执行，策略任务建议在 `16:50` 执行。策略脚本会先检查：
+取数任务建议在 `16:30` 执行，策略任务建议在 `16:50` 开始检查。策略脚本会先检查：
 
 ```text
 data/offline/a_share_12m_tencent_sina/prices_long.csv
 ```
 
-的最新日期是否等于当天日期。只有今日数据已经更新，才会运行最新策略；否则跳过并发送飞书说明，避免基于旧数据生成交易信号。
+的最新日期是否等于当天日期。只有今日数据已经更新，才会运行最新策略；如果 `16:50` 时取数还没结束，后台任务会每 5 分钟重试一次，默认等到 `20:30`。超过截止时间仍未取得今日数据时，才会跳过并发送飞书说明，避免基于旧数据生成交易信号。
 
 单次手动运行：
 
@@ -309,6 +309,8 @@ mkdir -p logs run
 nohup python3 run_daily_strategy_signal.py \
   --daemon \
   --run-at 16:50 \
+  --data-ready-retry-seconds 300 \
+  --data-ready-deadline 20:30 \
   --data-dir /Users/bytedance/cqm/Personal_Strategy/data/offline/a_share_12m_tencent_sina \
   --output-base-dir /Users/bytedance/cqm/Personal_Strategy/data/backtests/daily_strategy_signals \
   --warmup-start-date 20250106 \
@@ -401,5 +403,5 @@ launchctl start com.personal.strategy.daily-signal
 - 是否因为今日数据未更新而跳过；
 - 当前目标持仓；
 - 当日持仓调整记录；
-- 假设本金 10 万、严格按策略执行时的当日收益率和累计收益率；
+- 假设本金 10 万、从本地 live state 启用日开始计数的当日收益率和累计收益率；
 - 如果无调整，会明确说明“维持当前目标持仓，不主动调仓”。
