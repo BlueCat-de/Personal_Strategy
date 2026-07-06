@@ -348,22 +348,38 @@ def seconds_until(run_at: str) -> float:
     return float((target - now).total_seconds())
 
 
+def should_run_today(run_at: str, last_run_date: str | None, now: pd.Timestamp | None = None) -> bool:
+    now = now or pd.Timestamp.now()
+    hour, minute = [int(part) for part in run_at.split(":", 1)]
+    target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    today = yyyymmdd(now.normalize())
+    return now >= target and last_run_date != today
+
+
 def run_daemon(args: argparse.Namespace) -> None:
     LOGGER.info("Daily strategy daemon started; run_at=%s", args.run_at)
+    last_run_date: str | None = None
     while True:
-        sleep_seconds = seconds_until(args.run_at)
-        LOGGER.info("Next strategy run in %.0f seconds", sleep_seconds)
-        time.sleep(sleep_seconds)
-        try:
-            summary = run_once(args)
-            LOGGER.info("Strategy summary: %s", summary)
-            send_summary(args, summary)
-        except Exception as exc:  # noqa: BLE001
-            LOGGER.exception("Daily strategy run failed: %s", exc)
-            target_date = normalize_target_date(args.end_date)
-            summary = {"status": "failed", "target_date": target_date, "error": str(exc)}
-            send_summary(args, summary)
-        time.sleep(60)
+        now = pd.Timestamp.now()
+        if should_run_today(args.run_at, last_run_date, now):
+            args.end_date = yyyymmdd(now.normalize())
+            try:
+                summary = run_once(args)
+                LOGGER.info("Strategy summary: %s", summary)
+                send_summary(args, summary)
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.exception("Daily strategy run failed: %s", exc)
+                target_date = normalize_target_date(args.end_date)
+                summary = {"status": "failed", "target_date": target_date, "error": str(exc)}
+                send_summary(args, summary)
+            finally:
+                last_run_date = args.end_date
+            time.sleep(60)
+            continue
+
+        sleep_seconds = min(seconds_until(args.run_at), 300.0)
+        LOGGER.info("Next strategy check in %.0f seconds; run_at=%s", sleep_seconds, args.run_at)
+        time.sleep(max(60.0, sleep_seconds))
 
 
 def parse_args() -> argparse.Namespace:

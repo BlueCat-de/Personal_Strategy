@@ -26,6 +26,7 @@ import os
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -429,6 +430,49 @@ def update_symbol(
     }
 
 
+def update_symbol_with_retries(
+    *,
+    index: int,
+    total: int,
+    symbol: str,
+    symbol_dir: Path,
+    args: argparse.Namespace,
+    data_sources: tuple[str, ...],
+) -> dict:
+    record: dict | None = None
+    for attempt in range(1, args.retries + 2):
+        try:
+            LOGGER.info("[%s/%s] Update %s attempt=%s", index, total, symbol, attempt)
+            record = update_symbol(
+                symbol=symbol,
+                symbol_dir=symbol_dir,
+                end_date=args.end_date,
+                refresh_days=args.refresh_days,
+                adjust=args.adjust,
+                data_sources=data_sources,
+                trim_before=args.trim_before,
+                dry_run=args.dry_run,
+            )
+            break
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("Failed attempt %s for %s: %s", attempt, symbol, exc)
+            if attempt <= args.retries:
+                time.sleep(args.retry_sleep_seconds)
+            else:
+                LOGGER.exception("Failed to update %s after retries", symbol)
+                record = {
+                    "symbol": symbol,
+                    "status": "failed",
+                    "error": str(exc),
+                    "added_rows": 0,
+                    "rows": None,
+                    "path": str(symbol_dir / f"{symbol}.csv"),
+                }
+    if args.sleep_seconds > 0:
+        time.sleep(args.sleep_seconds)
+    return {"index": index, **(record or {"symbol": symbol, "status": "failed", "added_rows": 0})}
+
+
 def rebuild_prices_long(output_dir: Path) -> dict:
     symbol_dir = output_dir / "symbols"
     frames: list[pd.DataFrame] = []
@@ -553,49 +597,52 @@ def run_update_once(args: argparse.Namespace) -> dict:
                 universe = universe.head(args.limit)
 
         LOGGER.info(
-            "Start daily update: output=%s symbols=%s end_date=%s refresh_days=%s sources=%s dry_run=%s",
+            "Start daily update: output=%s symbols=%s end_date=%s refresh_days=%s sources=%s dry_run=%s workers=%s",
             output_dir,
             len(universe),
             args.end_date,
             args.refresh_days,
             ",".join(data_sources),
             args.dry_run,
+            args.workers,
         )
 
+        tasks = [
+            (index, normalize_symbol(row["symbol"]))
+            for index, row in enumerate(universe.to_dict("records"), start=1)
+        ]
         records: list[dict] = []
-        for index, row in universe.iterrows():
-            symbol = normalize_symbol(row["symbol"])
-            record: dict | None = None
-            for attempt in range(1, args.retries + 2):
-                try:
-                    LOGGER.info("[%s/%s] Update %s attempt=%s", index + 1, len(universe), symbol, attempt)
-                    record = update_symbol(
+        if args.workers <= 1:
+            for index, symbol in tasks:
+                records.append(
+                    update_symbol_with_retries(
+                        index=index,
+                        total=len(tasks),
                         symbol=symbol,
                         symbol_dir=symbol_dir,
-                        end_date=args.end_date,
-                        refresh_days=args.refresh_days,
-                        adjust=args.adjust,
+                        args=args,
                         data_sources=data_sources,
-                        trim_before=args.trim_before,
-                        dry_run=args.dry_run,
                     )
-                    break
-                except Exception as exc:  # noqa: BLE001
-                    LOGGER.warning("Failed attempt %s for %s: %s", attempt, symbol, exc)
-                    if attempt <= args.retries:
-                        time.sleep(args.retry_sleep_seconds)
-                    else:
-                        LOGGER.exception("Failed to update %s after retries", symbol)
-                        record = {
-                            "symbol": symbol,
-                            "status": "failed",
-                            "error": str(exc),
-                            "added_rows": 0,
-                            "rows": None,
-                            "path": str(symbol_dir / f"{symbol}.csv"),
-                        }
-            records.append(record or {"symbol": symbol, "status": "failed", "added_rows": 0})
-            time.sleep(args.sleep_seconds)
+                )
+        else:
+            with ThreadPoolExecutor(max_workers=args.workers) as executor:
+                futures = [
+                    executor.submit(
+                        update_symbol_with_retries,
+                        index=index,
+                        total=len(tasks),
+                        symbol=symbol,
+                        symbol_dir=symbol_dir,
+                        args=args,
+                        data_sources=data_sources,
+                    )
+                    for index, symbol in tasks
+                ]
+                for completed, future in enumerate(as_completed(futures), start=1):
+                    records.append(future.result())
+                    if completed % max(1, args.workers * 5) == 0 or completed == len(futures):
+                        LOGGER.info("Completed %s/%s symbol updates", completed, len(futures))
+            records = sorted(records, key=lambda item: item.get("index", 0))
 
         combined = None
         if not args.no_combined and not args.dry_run:
@@ -648,34 +695,49 @@ def seconds_until_run_at(run_at: str, now: pd.Timestamp | None = None) -> float:
     return max(0.0, float((target - now).total_seconds()))
 
 
+def should_run_today(run_at: str, last_run_date: str | None, now: pd.Timestamp | None = None) -> bool:
+    now = now or pd.Timestamp.now()
+    hour_text, minute_text = run_at.split(":", maxsplit=1)
+    today = yyyymmdd(now.normalize())
+    target = now.normalize() + pd.Timedelta(hours=int(hour_text), minutes=int(minute_text))
+    return now >= target and last_run_date != today
+
+
 def run_daemon(args: argparse.Namespace) -> None:
     LOGGER.info("Start scheduler daemon: run_at=%s output=%s", args.run_at, args.output_dir)
+    last_run_date: str | None = None
     while True:
-        sleep_seconds = seconds_until_run_at(args.run_at)
-        LOGGER.info("Next update scheduled in %.0f seconds at %s", sleep_seconds, args.run_at)
-        time.sleep(sleep_seconds)
-        args.end_date = yyyymmdd(pd.Timestamp.today().normalize())
-        try:
-            summary = run_update_once(args)
-            LOGGER.info("Scheduled update summary: %s", summary)
-            notify_feishu(args, summary)
-        except Exception as exc:  # noqa: BLE001
-            message = f"Scheduled daily update failed for {args.end_date}: {exc}"
-            LOGGER.exception(message)
-            notify_feishu(
-                args,
-                {
-                    "status": "failed",
-                    "end_date": args.end_date,
-                    "updated": 0,
-                    "refreshed": 0,
-                    "no_new": 0,
-                    "failed": 0,
-                    "failed_ratio": 1.0,
-                },
-            )
-            run_alert(args.alert_command, status="failed", message=message, output_dir=Path(args.output_dir))
-        time.sleep(60)
+        now = pd.Timestamp.now()
+        if should_run_today(args.run_at, last_run_date, now):
+            args.end_date = yyyymmdd(now.normalize())
+            try:
+                summary = run_update_once(args)
+                LOGGER.info("Scheduled update summary: %s", summary)
+                notify_feishu(args, summary)
+            except Exception as exc:  # noqa: BLE001
+                message = f"Scheduled daily update failed for {args.end_date}: {exc}"
+                LOGGER.exception(message)
+                notify_feishu(
+                    args,
+                    {
+                        "status": "failed",
+                        "end_date": args.end_date,
+                        "updated": 0,
+                        "refreshed": 0,
+                        "no_new": 0,
+                        "failed": 0,
+                        "failed_ratio": 1.0,
+                    },
+                )
+                run_alert(args.alert_command, status="failed", message=message, output_dir=Path(args.output_dir))
+            finally:
+                last_run_date = args.end_date
+            time.sleep(60)
+            continue
+
+        sleep_seconds = min(seconds_until_run_at(args.run_at, now), 300.0)
+        LOGGER.info("Next update check in %.0f seconds; run_at=%s", sleep_seconds, args.run_at)
+        time.sleep(max(60.0, sleep_seconds))
 
 
 def parse_args() -> argparse.Namespace:
@@ -705,6 +767,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--trading-day-check", choices=["auto", "weekday", "off"], default="auto", help="Trading day check mode. auto verifies 000001 has a daily bar.")
     parser.add_argument("--lock-file", help="Optional lock file path. Default: <output-dir>/.daily_update.lock")
     parser.add_argument("--lock-stale-seconds", type=int, default=6 * 3600, help="Only used for stale lock logging. OS lock still wins.")
+    parser.add_argument("--workers", type=int, default=8, help="Concurrent symbol update workers. Use 1 for sequential mode.")
     parser.add_argument("--retries", type=int, default=2, help="Retries per symbol after exceptions.")
     parser.add_argument("--retry-sleep-seconds", type=float, default=3.0, help="Sleep between symbol retries.")
     parser.add_argument("--max-failed-ratio", type=float, default=0.05, help="Fail the run if failed symbols exceed this ratio.")
