@@ -23,6 +23,7 @@ import fcntl
 import json
 import logging
 import os
+import tempfile
 import subprocess
 import sys
 import time
@@ -47,6 +48,7 @@ from stock_feature_pipeline import (
 
 
 LOGGER = logging.getLogger("offline_a_share_daily_update")
+DEFAULT_SCHEDULER_STATE_FILE = Path("run/offline_daily_update_scheduler_state.json")
 
 
 def yyyymmdd(value: pd.Timestamp) -> str:
@@ -63,6 +65,62 @@ def parse_sources(value: str) -> tuple[str, ...]:
 
 def read_csv_strict(path: Path) -> pd.DataFrame:
     return pd.read_csv(path, dtype={"symbol": str})
+
+
+def atomic_write_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as handle:
+            tmp_path = Path(handle.name)
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+    finally:
+        if tmp_path and tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+
+
+def atomic_write_json(path: Path, payload: dict) -> None:
+    atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+def load_json_file(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning("Failed to read JSON state %s: %s", path, exc)
+        return {}
+
+
+def update_scheduler_state(path: Path, *, target_date: str, status: str) -> None:
+    state = load_json_file(path)
+    state.update(
+        {
+            "last_run_date": target_date,
+            "last_status": status,
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+        }
+    )
+    atomic_write_json(path, state)
+
+
+def atomic_write_csv(df: pd.DataFrame, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", newline="", dir=path.parent, delete=False) as handle:
+            tmp_path = Path(handle.name)
+            df.to_csv(handle, index=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+    finally:
+        if tmp_path and tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
 
 
 def setup_logging(level: str, log_file: str | None = None) -> None:
@@ -275,7 +333,7 @@ def refresh_universe(
     universe = universe.drop_duplicates("symbol").sort_values("symbol").reset_index(drop=True)
     if limit:
         universe = universe.head(limit)
-    universe.to_csv(output_dir / "universe.csv", index=False, encoding="utf-8")
+    atomic_write_csv(universe, output_dir / "universe.csv")
     return universe
 
 
@@ -417,7 +475,7 @@ def update_symbol(
     new_end = str(merged["date"].max()) if not merged.empty else previous_end
     if not dry_run:
         path.parent.mkdir(parents=True, exist_ok=True)
-        merged.to_csv(path, index=False, encoding="utf-8")
+        atomic_write_csv(merged, path)
 
     return {
         "symbol": symbol,
@@ -503,7 +561,7 @@ def rebuild_prices_long(output_dir: Path) -> dict:
         .reset_index(drop=True)
     )
     output_path = output_dir / "prices_long.csv"
-    combined.to_csv(output_path, index=False, encoding="utf-8")
+    atomic_write_csv(combined, output_path)
     return {
         "path": str(output_path),
         "rows": int(len(combined)),
@@ -545,7 +603,7 @@ def update_manifest(output_dir: Path, args: argparse.Namespace, universe: pd.Dat
         "columns": RUNTIME_COLUMNS,
         "latest_update": update_summary,
     }
-    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_text(manifest_path, json.dumps(manifest, ensure_ascii=False, indent=2))
 
 
 def run_update_once(args: argparse.Namespace) -> dict:
@@ -704,8 +762,15 @@ def should_run_today(run_at: str, last_run_date: str | None, now: pd.Timestamp |
 
 
 def run_daemon(args: argparse.Namespace) -> None:
-    LOGGER.info("Start scheduler daemon: run_at=%s output=%s", args.run_at, args.output_dir)
-    last_run_date: str | None = None
+    scheduler_state_file = Path(args.scheduler_state_file)
+    scheduler_state = load_json_file(scheduler_state_file)
+    last_run_date = scheduler_state.get("last_run_date")
+    LOGGER.info(
+        "Start scheduler daemon: run_at=%s output=%s last_run_date=%s",
+        args.run_at,
+        args.output_dir,
+        last_run_date,
+    )
     while True:
         now = pd.Timestamp.now()
         if should_run_today(args.run_at, last_run_date, now):
@@ -717,20 +782,26 @@ def run_daemon(args: argparse.Namespace) -> None:
             except Exception as exc:  # noqa: BLE001
                 message = f"Scheduled daily update failed for {args.end_date}: {exc}"
                 LOGGER.exception(message)
+                summary = {
+                    "status": "failed",
+                    "end_date": args.end_date,
+                    "updated": 0,
+                    "refreshed": 0,
+                    "no_new": 0,
+                    "failed": 0,
+                    "failed_ratio": 1.0,
+                }
                 notify_feishu(
                     args,
-                    {
-                        "status": "failed",
-                        "end_date": args.end_date,
-                        "updated": 0,
-                        "refreshed": 0,
-                        "no_new": 0,
-                        "failed": 0,
-                        "failed_ratio": 1.0,
-                    },
+                    summary,
                 )
                 run_alert(args.alert_command, status="failed", message=message, output_dir=Path(args.output_dir))
             finally:
+                update_scheduler_state(
+                    scheduler_state_file,
+                    target_date=args.end_date,
+                    status=summary.get("status", "unknown"),
+                )
                 last_run_date = args.end_date
             time.sleep(60)
             continue
@@ -763,6 +834,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true", help="Fetch and merge in memory without writing files.")
     parser.add_argument("--daemon", action="store_true", help="Run continuously and execute once per day at --run-at.")
     parser.add_argument("--run-at", default="16:30", help="Daily local time HH:MM used with --daemon. Default: 16:30.")
+    parser.add_argument("--scheduler-state-file", default=str(DEFAULT_SCHEDULER_STATE_FILE), help="Local state file for daemon run deduplication.")
     parser.add_argument("--skip-non-trading-day", action=argparse.BooleanOptionalAction, default=True, help="Skip when --end-date is not an A-share trading day.")
     parser.add_argument("--trading-day-check", choices=["auto", "weekday", "off"], default="auto", help="Trading day check mode. auto verifies 000001 has a daily bar.")
     parser.add_argument("--lock-file", help="Optional lock file path. Default: <output-dir>/.daily_update.lock")

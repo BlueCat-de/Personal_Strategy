@@ -16,6 +16,7 @@ import logging
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from contextlib import contextmanager
 from datetime import datetime
@@ -24,7 +25,7 @@ from typing import Iterator
 
 import pandas as pd
 
-from update_offline_a_share_daily import load_feishu_webhooks, send_to_feishu_all
+from update_offline_a_share_daily import is_trading_day, load_feishu_webhooks, parse_sources, send_to_feishu_all
 
 
 LOGGER = logging.getLogger("daily_strategy_signal")
@@ -34,6 +35,7 @@ DEFAULT_OUTPUT_BASE = REPO_ROOT / "data/backtests/daily_strategy_signals"
 DEFAULT_STRATEGY = REPO_ROOT / "strategies/ai_native/small_account_high_conviction_policy.py"
 DEFAULT_WEBHOOK_FILE = REPO_ROOT / ".feishu_webhook"
 DEFAULT_LIVE_STATE_FILE = REPO_ROOT / "run/daily_strategy_live_state.json"
+DEFAULT_SCHEDULER_STATE_FILE = REPO_ROOT / "run/daily_strategy_scheduler_state.json"
 
 
 def yyyymmdd(value: pd.Timestamp) -> str:
@@ -74,6 +76,92 @@ def exclusive_lock(lock_file: Path) -> Iterator[bool]:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         finally:
             handle.close()
+
+
+def atomic_write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as handle:
+            tmp_path = Path(handle.name)
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+    finally:
+        if tmp_path and tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+
+
+def atomic_write_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as handle:
+            tmp_path = Path(handle.name)
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+    finally:
+        if tmp_path and tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+
+
+def load_json_file(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning("Failed to read JSON state %s: %s", path, exc)
+        return {}
+
+
+def update_scheduler_state(path: Path, *, target_date: str, status: str) -> None:
+    state = load_json_file(path)
+    state.update(
+        {
+            "last_run_date": target_date,
+            "last_status": status,
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+        }
+    )
+    atomic_write_json(path, state)
+
+
+def update_lock_file(data_dir: Path, lock_file: str | None) -> Path:
+    return Path(lock_file) if lock_file else data_dir / ".daily_update.lock"
+
+
+def is_file_locked(lock_file: Path) -> bool:
+    if not lock_file.exists():
+        return False
+    handle = lock_file.open("a+", encoding="utf-8")
+    try:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        return False
+    finally:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
+
+
+def wait_for_update_lock(lock_file: Path, max_seconds: float, retry_seconds: float) -> bool:
+    deadline = time.monotonic() + max(0.0, max_seconds)
+    while is_file_locked(lock_file):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            LOGGER.warning("Data update lock is still active after waiting %.0fs: %s", max_seconds, lock_file)
+            return False
+        sleep_seconds = min(max(1.0, retry_seconds), remaining)
+        LOGGER.info("Data update lock is active; wait %.0f seconds: %s", sleep_seconds, lock_file)
+        time.sleep(sleep_seconds)
+    return True
 
 
 def latest_dataset_date(data_dir: Path) -> str | None:
@@ -225,18 +313,11 @@ def analyze_strategy_output(output_dir: Path, data_dir: Path, target_date: str, 
 
 
 def load_live_state(path: Path) -> dict:
-    if not path.exists():
-        return {}
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception as exc:  # noqa: BLE001
-        LOGGER.warning("Failed to read live state %s: %s", path, exc)
-        return {}
+    return load_json_file(path)
 
 
 def write_live_state(path: Path, state: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_json(path, state)
 
 
 def apply_live_account_state(summary: dict, args: argparse.Namespace, latest_data_date: str | None) -> dict:
@@ -291,7 +372,9 @@ def build_feishu_message(summary: dict) -> str:
         "success": "策略每日检查：成功",
         "failed": "策略每日检查：失败",
         "skipped_no_today_data": "策略每日检查：跳过，今日数据未更新",
+        "skipped_non_trading_day": "策略每日检查：跳过，非交易日",
         "skipped_locked": "策略每日检查：跳过，已有任务运行",
+        "skipped_data_locked": "策略每日检查：跳过，取数任务未释放锁",
     }
     lines = [title_map.get(status, f"策略每日检查：{status}")]
     lines.append(f"日期：{summary.get('target_date', '-')}")
@@ -305,8 +388,15 @@ def build_feishu_message(summary: dict) -> str:
     if status == "failed":
         lines.append(f"错误：{summary.get('error', '-')}")
         return "\n".join(lines)
+    if status == "skipped_non_trading_day":
+        lines.append("结论：今日不是 A 股交易日，不运行策略。")
+        return "\n".join(lines)
     if status == "skipped_locked":
         lines.append("结论：检测到已有策略任务运行，本次跳过。")
+        return "\n".join(lines)
+    if status == "skipped_data_locked":
+        lines.append(f"数据锁文件：{summary.get('data_update_lock_file', '-')}")
+        lines.append("结论：取数任务仍在运行或异常持锁，本次不读取行情，避免读取半成品数据。")
         return "\n".join(lines)
 
     lines.extend(
@@ -357,15 +447,41 @@ def send_summary(args: argparse.Namespace, summary: dict) -> None:
 
 def write_summary(output_dir: Path, summary: dict) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / "daily_strategy_signal.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-    (output_dir / "daily_strategy_signal.txt").write_text(build_feishu_message(summary), encoding="utf-8")
+    atomic_write_json(output_dir / "daily_strategy_signal.json", summary)
+    atomic_write_text(output_dir / "daily_strategy_signal.txt", build_feishu_message(summary))
 
 
 def run_once(args: argparse.Namespace) -> dict:
     target_date = normalize_target_date(args.end_date)
     data_dir = Path(args.data_dir)
-    latest_data_date = latest_dataset_date(data_dir)
     output_dir = Path(args.output_base_dir) / target_date
+
+    if args.skip_non_trading_day and not is_trading_day(
+        target_date,
+        parse_sources(args.data_sources),
+        args.adjust,
+        args.trading_day_check,
+    ):
+        summary = {
+            "status": "skipped_non_trading_day",
+            "target_date": target_date,
+            "output_dir": str(output_dir),
+        }
+        write_summary(output_dir, summary)
+        return summary
+
+    data_update_lock = update_lock_file(data_dir, args.data_update_lock_file)
+    if not wait_for_update_lock(data_update_lock, args.data_lock_wait_seconds, args.data_ready_retry_seconds):
+        summary = {
+            "status": "skipped_data_locked",
+            "target_date": target_date,
+            "data_update_lock_file": str(data_update_lock),
+            "output_dir": str(output_dir),
+        }
+        write_summary(output_dir, summary)
+        return summary
+
+    latest_data_date = latest_dataset_date(data_dir)
 
     if latest_data_date != target_date and not args.allow_stale_data:
         summary = {
@@ -434,17 +550,69 @@ def deadline_reached(deadline: str, now: pd.Timestamp | None = None) -> bool:
 
 
 def run_daemon(args: argparse.Namespace) -> None:
+    scheduler_state_file = Path(args.scheduler_state_file)
+    scheduler_state = load_json_file(scheduler_state_file)
+    last_run_date = scheduler_state.get("last_run_date")
     LOGGER.info(
-        "Daily strategy daemon started; run_at=%s data_ready_deadline=%s retry_seconds=%s",
+        "Daily strategy daemon started; run_at=%s data_ready_deadline=%s retry_seconds=%s last_run_date=%s",
         args.run_at,
         args.data_ready_deadline,
         args.data_ready_retry_seconds,
+        last_run_date,
     )
-    last_run_date: str | None = None
     while True:
         now = pd.Timestamp.now()
         if should_run_today(args.run_at, last_run_date, now):
             args.end_date = yyyymmdd(now.normalize())
+            output_dir = Path(args.output_base_dir) / args.end_date
+
+            if args.skip_non_trading_day and not is_trading_day(
+                args.end_date,
+                parse_sources(args.data_sources),
+                args.adjust,
+                args.trading_day_check,
+            ):
+                summary = {
+                    "status": "skipped_non_trading_day",
+                    "target_date": args.end_date,
+                    "output_dir": str(output_dir),
+                }
+                write_summary(output_dir, summary)
+                LOGGER.info("Skip strategy because %s is not an A-share trading day.", args.end_date)
+                if args.feishu_notify_non_trading_day:
+                    send_summary(args, summary)
+                update_scheduler_state(scheduler_state_file, target_date=args.end_date, status=summary["status"])
+                last_run_date = args.end_date
+                time.sleep(60)
+                continue
+
+            data_update_lock = update_lock_file(Path(args.data_dir), args.data_update_lock_file)
+            if is_file_locked(data_update_lock):
+                if not deadline_reached(args.data_ready_deadline, now):
+                    LOGGER.info(
+                        "Data update lock is active for %s; retry in %s seconds until %s: %s",
+                        args.end_date,
+                        args.data_ready_retry_seconds,
+                        args.data_ready_deadline,
+                        data_update_lock,
+                    )
+                    time.sleep(max(60.0, float(args.data_ready_retry_seconds)))
+                    continue
+
+                summary = {
+                    "status": "skipped_data_locked",
+                    "target_date": args.end_date,
+                    "output_dir": str(output_dir),
+                    "data_update_lock_file": str(data_update_lock),
+                }
+                write_summary(output_dir, summary)
+                LOGGER.warning("Data update lock was not released before deadline; summary=%s", summary)
+                send_summary(args, summary)
+                update_scheduler_state(scheduler_state_file, target_date=args.end_date, status=summary["status"])
+                last_run_date = args.end_date
+                time.sleep(60)
+                continue
+
             latest_data_date = latest_dataset_date(Path(args.data_dir))
             if latest_data_date != args.end_date and not args.allow_stale_data:
                 if not deadline_reached(args.data_ready_deadline, now):
@@ -458,7 +626,6 @@ def run_daemon(args: argparse.Namespace) -> None:
                     time.sleep(max(60.0, float(args.data_ready_retry_seconds)))
                     continue
 
-                output_dir = Path(args.output_base_dir) / args.end_date
                 summary = {
                     "status": "skipped_no_today_data",
                     "target_date": args.end_date,
@@ -469,6 +636,7 @@ def run_daemon(args: argparse.Namespace) -> None:
                 write_summary(output_dir, summary)
                 LOGGER.warning("Data was not ready before deadline; summary=%s", summary)
                 send_summary(args, summary)
+                update_scheduler_state(scheduler_state_file, target_date=args.end_date, status=summary["status"])
                 last_run_date = args.end_date
                 time.sleep(60)
                 continue
@@ -483,6 +651,11 @@ def run_daemon(args: argparse.Namespace) -> None:
                 summary = {"status": "failed", "target_date": target_date, "error": str(exc)}
                 send_summary(args, summary)
             finally:
+                update_scheduler_state(
+                    scheduler_state_file,
+                    target_date=args.end_date,
+                    status=summary.get("status", "unknown"),
+                )
                 last_run_date = args.end_date
             time.sleep(60)
             continue
@@ -503,9 +676,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=3046)
     parser.add_argument("--initial-cash", type=float, default=100000.0, help="Assumed live account capital for daily PnL reporting.")
     parser.add_argument("--live-state-file", default=str(DEFAULT_LIVE_STATE_FILE), help="Local state file for live PnL reporting.")
+    parser.add_argument("--scheduler-state-file", default=str(DEFAULT_SCHEDULER_STATE_FILE), help="Local state file for daemon run deduplication.")
     parser.add_argument("--reset-live-state", action="store_true", help="Reset live PnL baseline to the current target date.")
     parser.add_argument("--timeout", type=int, default=1800)
     parser.add_argument("--allow-stale-data", action="store_true", help="Run even if prices_long.csv is not updated to target date.")
+    parser.add_argument("--data-update-lock-file", help="Daily updater lock file. Defaults to <data-dir>/.daily_update.lock.")
+    parser.add_argument("--data-lock-wait-seconds", type=int, default=1800, help="Max seconds to wait for updater lock before reading data.")
+    parser.add_argument("--data-sources", default="tencent,sina", help="Comma-separated data sources for trading-day checks.")
+    parser.add_argument("--adjust", default="qfq", choices=["", "qfq", "hfq"], help="Adjustment used for trading-day checks.")
+    parser.add_argument("--skip-non-trading-day", action=argparse.BooleanOptionalAction, default=True, help="Skip strategy on non-A-share trading days.")
+    parser.add_argument("--trading-day-check", choices=["auto", "weekday", "off"], default="weekday", help="Trading day check mode.")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--daemon", action="store_true")
     parser.add_argument("--run-at", default="16:50", help="Daemon run time in HH:MM.")
@@ -515,6 +695,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log-file", default=str(REPO_ROOT / "logs/daily_strategy_signal.log"))
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     parser.add_argument("--feishu-notify", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--feishu-notify-non-trading-day", action="store_true", help="Also send Feishu notification when strategy skips a non-trading day.")
     parser.add_argument("--feishu-notify-dry-run", action="store_true")
     parser.add_argument("--feishu-webhook-file", default=str(DEFAULT_WEBHOOK_FILE))
     return parser.parse_args()

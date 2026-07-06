@@ -253,10 +253,11 @@ python3 update_offline_a_share_daily.py \
 |---|---|
 | 交易日判断 | 默认开启。周末直接跳过；工作日用 `000001` 当天日线 bar 判断是否真实交易日。 |
 | 网络异常 | 数据源按 `tencent,sina` fallback；单票异常默认重试 2 次；异常记录到日志。 |
-| 防并发 | 使用 `fcntl` 文件锁，默认锁文件为 `<output-dir>/.daily_update.lock`。同一时间只允许一个任务写数据。 |
+| 防并发 | 使用 `fcntl` 文件锁，默认锁文件为 `<output-dir>/.daily_update.lock`。同一时间只允许一个取数任务写数据；策略任务读取前也会检查该锁。 |
+| 防重复 | 取数 daemon 写入 `run/offline_daily_update_scheduler_state.json`，策略 daemon 写入 `run/daily_strategy_scheduler_state.json`；进程在执行时间后重启时不会重复跑当天任务。 |
 | 日志 | 同时输出到 stdout 和 `logs/offline_daily_update.log`。`launchd` 另有 stdout/stderr 日志。 |
 | 错误告警 | 内置飞书通知，成功/跳过/失败都会推送；另支持 `--alert-command` 作为失败兜底。 |
-| 数据一致性 | 单票文件按 `date,symbol` 去重；保留股票代码前导零；每次更新后重建 `prices_long.csv`。 |
+| 数据一致性 | 单票文件按 `date,symbol` 去重；保留股票代码前导零；`universe.csv`、单票 CSV、`prices_long.csv`、`manifest.json` 均采用临时文件写入后原子替换。 |
 | 非交易日 | 默认跳过，不会重建数据。可用 `--no-skip-non-trading-day` 强制运行。 |
 
 ## 7. 改进建议
@@ -275,7 +276,25 @@ python3 update_offline_a_share_daily.py \
 data/offline/a_share_12m_tencent_sina/prices_long.csv
 ```
 
-的最新日期是否等于当天日期。只有今日数据已经更新，才会运行最新策略；如果 `16:50` 时取数还没结束，后台任务会每 5 分钟重试一次，默认等到 `20:30`。超过截止时间仍未取得今日数据时，才会跳过并发送飞书说明，避免基于旧数据生成交易信号。
+的最新日期是否等于当天日期。策略读取行情前还会检查取数任务的 `.daily_update.lock`，只有取数锁释放且今日数据已经更新，才会运行最新策略；如果 `16:50` 时取数还没结束，后台任务会每 5 分钟重试一次，默认等到 `20:30`。超过截止时间仍未取得今日数据或取数锁仍未释放时，才会跳过并发送飞书说明，避免基于旧数据或半成品数据生成交易信号。
+
+策略 daemon 会把已执行日期写入：
+
+```text
+run/daily_strategy_scheduler_state.json
+```
+
+即使 `16:50` 后重启 daemon，也不会重复执行当天策略或重复推送。
+
+取数 daemon 同样会把已执行日期写入：
+
+```text
+run/offline_daily_update_scheduler_state.json
+```
+
+即使 `16:30` 后重启 daemon，也不会重复拉取当天全市场数据。
+
+策略端默认 `--trading-day-check weekday`：周末直接跳过，工作日等待数据到截止时间。这样避免额外网络检查失败时，把真实交易日误判成非交易日。若希望工作日节假日更早跳过，可改为 `--trading-day-check auto`。
 
 单次手动运行：
 
@@ -311,6 +330,7 @@ nohup python3 run_daily_strategy_signal.py \
   --run-at 16:50 \
   --data-ready-retry-seconds 300 \
   --data-ready-deadline 20:30 \
+  --data-lock-wait-seconds 1800 \
   --data-dir /Users/bytedance/cqm/Personal_Strategy/data/offline/a_share_12m_tencent_sina \
   --output-base-dir /Users/bytedance/cqm/Personal_Strategy/data/backtests/daily_strategy_signals \
   --warmup-start-date 20250106 \
@@ -359,6 +379,12 @@ cat > ~/Library/LaunchAgents/com.personal.strategy.daily-signal.plist <<'PLIST'
     <string>--daemon</string>
     <string>--run-at</string>
     <string>16:50</string>
+    <string>--data-ready-retry-seconds</string>
+    <string>300</string>
+    <string>--data-ready-deadline</string>
+    <string>20:30</string>
+    <string>--data-lock-wait-seconds</string>
+    <string>1800</string>
     <string>--data-dir</string>
     <string>/Users/bytedance/cqm/Personal_Strategy/data/offline/a_share_12m_tencent_sina</string>
     <string>--output-base-dir</string>

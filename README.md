@@ -209,12 +209,15 @@ python update_offline_a_share_daily.py \
 - 重建 `prices_long.csv`；
 - 更新 `manifest.json`；
 - 读取 `.feishu_webhook`，向所有配置的飞书机器人推送成功、跳过或失败摘要；
-- 使用文件锁避免并发写数据。
+- 使用文件锁避免并发写数据；
+- `universe.csv`、单票 CSV、`prices_long.csv`、`manifest.json` 均采用临时文件写入后原子替换，避免半成品文件被读取；
+- `run/offline_daily_update_scheduler_state.json` 记录已执行日期，避免 16:30 后重启 daemon 造成当天重复取数。
 
 当前后台部署：
 
 ```text
 取数时间：每天 16:30
+重复执行保护：run/offline_daily_update_scheduler_state.json
 PID 文件：run/offline_daily_update.pid
 日志文件：logs/offline_daily_update.log
 ```
@@ -240,7 +243,9 @@ kill "$(cat run/offline_daily_update.pid)"
 data/offline/a_share_12m_tencent_sina/prices_long.csv
 ```
 
-最新日期是否等于当天。如果数据没有更新到当天，策略不会立即运行；后台任务会每 5 分钟重试一次，默认等待到 20:30。只有超过等待截止时间仍未取得当天数据，才会飞书说明“今日数据未更新，跳过策略”。
+最新日期是否等于当天。策略运行前还会检查取数任务的 `.daily_update.lock`，如果取数仍在运行，则不会读取行情文件。
+
+如果数据没有更新到当天，策略不会立即运行；后台任务会每 5 分钟重试一次，默认等待到 20:30。只有超过等待截止时间仍未取得当天数据，才会飞书说明“今日数据未更新，跳过策略”。策略端默认直接跳过周末；工作日不依赖额外网络判定交易日，避免行情源抖动导致真实交易日被误跳过。
 
 单次执行：
 
@@ -268,6 +273,8 @@ python run_daily_strategy_signal.py \
 ```text
 策略检查开始时间：每天 16:50
 数据等待策略：每 5 分钟重试，默认等到 20:30
+读写保护：等待取数锁释放后才读取行情
+重复执行保护：run/daily_strategy_scheduler_state.json 记录已执行日期
 日报本金：100,000 元
 PID 文件：run/daily_strategy_signal.pid
 日志文件：logs/daily_strategy_signal.log
