@@ -163,7 +163,7 @@
 
 ```bash
 AKSHARE_OFFLINE_DATA_DIR=data/offline/a_share_12m_tencent_sina \
-python3 .trae/skills/strategy-ai-native-small-account-high-conviction/strategy.py \
+python3 strategies/ai_native/small_account_high_conviction_policy.py \
   --warmup-start-date 20250106 \
   --start-date 20250705 \
   --end-date 20260705 \

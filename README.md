@@ -23,7 +23,6 @@ small_account_high_conviction_policy v4
 策略文件：
 
 - `strategies/ai_native/small_account_high_conviction_policy.py`
-- `.trae/skills/strategy-ai-native-small-account-high-conviction/strategy.py`
 - `SMALL_ACCOUNT_HIGH_CONVICTION_POLICY.md`
 
 核心逻辑：
@@ -306,7 +305,7 @@ https://open.larkoffice.com/open-apis/bot/v2/hook/yyy
 
 ```bash
 AKSHARE_OFFLINE_DATA_DIR=data/offline/a_share_12m_tencent_sina \
-python .trae/skills/strategy-ai-native-small-account-high-conviction/strategy.py \
+python strategies/ai_native/small_account_high_conviction_policy.py \
   --warmup-start-date 20250106 \
   --start-date 20250705 \
   --end-date 20260705 \
@@ -325,7 +324,7 @@ akshare_summary.json
 
 ## 批量回测
 
-保留批量回测能力，用于横向比较历史迁移策略：
+保留批量回测脚本，用于横向比较历史迁移策略。历史策略索引和本地技能入口属于个人 IDE 工作区配置，不再提交到公开仓库；公开主线默认使用当前 AI-native 策略脚本。
 
 ```bash
 python batch_strategy_backtest.py \
@@ -345,7 +344,6 @@ python batch_strategy_backtest.py \
 - `TRADE_LOGIC_DOCUMENTATION.md`：撮合、手续费、T+1、仓位和风控文档。
 - `DAILY_UPDATE_DEPLOYMENT.md`：每日取数、策略推送、后台和开机自启动部署。
 - `ORIGINAL_RESTORE_AUDIT.md`：历史策略还原/代理复现审计。
-- `.trae/skills/STRATEGY_SKILLS_INDEX.md`：策略 skill 索引。
 
 ## 目录说明
 
@@ -360,7 +358,6 @@ python batch_strategy_backtest.py \
 ├── batch_strategy_backtest.py                 # 批量策略回测
 ├── strategies/akshare_strategy_runtime.py     # 统一撮合与回测 runtime
 ├── strategies/ai_native/                      # 当前 AI-native 策略
-├── .trae/skills/                              # 策略 skill 入口和说明
 ├── DAILY_UPDATE_DEPLOYMENT.md                 # 后台部署说明
 ├── TRADE_LOGIC_DOCUMENTATION.md               # 交易逻辑说明
 └── README.md                                  # 当前文档
@@ -371,6 +368,7 @@ python batch_strategy_backtest.py \
 不会提交：
 
 - `.env.local`、`.feishu_webhook` 等密钥；
+- `.trae/` 本地 IDE 和技能配置；
 - `data/` 离线行情和回测结果；
 - `logs/` 日志；
 - `run/` pid 和 lock 文件；

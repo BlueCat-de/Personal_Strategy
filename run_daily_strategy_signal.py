@@ -31,7 +31,7 @@ LOGGER = logging.getLogger("daily_strategy_signal")
 REPO_ROOT = Path(__file__).resolve().parent
 DEFAULT_DATA_DIR = REPO_ROOT / "data/offline/a_share_12m_tencent_sina"
 DEFAULT_OUTPUT_BASE = REPO_ROOT / "data/backtests/daily_strategy_signals"
-DEFAULT_STRATEGY = REPO_ROOT / ".trae/skills/strategy-ai-native-small-account-high-conviction/strategy.py"
+DEFAULT_STRATEGY = REPO_ROOT / "strategies/ai_native/small_account_high_conviction_policy.py"
 DEFAULT_WEBHOOK_FILE = REPO_ROOT / ".feishu_webhook"
 
 

@@ -191,7 +191,9 @@ def write_manifest(config: OfflineDataConfig, universe: pd.DataFrame, symbol_rec
             "example": (
                 "AKSHARE_OFFLINE_DATA_DIR="
                 f"{config.output_dir} "
-                "python3 .trae/skills/strategy-bigquant-machine-learning-8e128b0e/strategy.py "
+                "python3 strategies/ai_native/small_account_high_conviction_policy.py "
+                "--warmup-start-date "
+                f"{config.fetch_start_date} "
                 "--start-date "
                 f"{config.test_start_date} "
                 "--end-date "
