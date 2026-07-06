@@ -20,9 +20,10 @@ small_account_high_conviction_policy v4
 
 定位：小资金 A 股主板账户，最多持仓 2 只，周频开仓/换仓，日频风控退出。
 
-策略文件：
+策略实现：
 
-- `strategies/ai_native/small_account_high_conviction_policy.py`
+- `strategies/` 为本地私有策略目录，不提交到公开仓库。
+- 当前生产策略入口在本地为 `strategies/ai_native/small_account_high_conviction_policy.py`。
 - `SMALL_ACCOUNT_HIGH_CONVICTION_POLICY.md`
 
 核心逻辑：
@@ -60,7 +61,7 @@ small_account_high_conviction_policy v4
 
 ## 真实交易约束
 
-共享撮合逻辑位于：
+共享撮合逻辑位于本地私有策略目录：
 
 ```text
 strategies/akshare_strategy_runtime.py
@@ -303,6 +304,8 @@ https://open.larkoffice.com/open-apis/bot/v2/hook/yyy
 
 ## 运行当前策略回测
 
+以下命令依赖本地私有 `strategies/` 目录：
+
 ```bash
 AKSHARE_OFFLINE_DATA_DIR=data/offline/a_share_12m_tencent_sina \
 python strategies/ai_native/small_account_high_conviction_policy.py \
@@ -324,7 +327,7 @@ akshare_summary.json
 
 ## 批量回测
 
-保留批量回测脚本，用于横向比较历史迁移策略。历史策略索引和本地技能入口属于个人 IDE 工作区配置，不再提交到公开仓库；公开主线默认使用当前 AI-native 策略脚本。
+保留批量回测脚本，用于横向比较历史迁移策略。历史策略实现、策略索引和本地技能入口属于个人研究资产，不再提交到公开仓库。
 
 ```bash
 python batch_strategy_backtest.py \
@@ -356,8 +359,6 @@ python batch_strategy_backtest.py \
 ├── jqdata_provider.py                         # JQData 数据封装
 ├── jqdata_a_share_data.py                     # JQData CLI
 ├── batch_strategy_backtest.py                 # 批量策略回测
-├── strategies/akshare_strategy_runtime.py     # 统一撮合与回测 runtime
-├── strategies/ai_native/                      # 当前 AI-native 策略
 ├── DAILY_UPDATE_DEPLOYMENT.md                 # 后台部署说明
 ├── TRADE_LOGIC_DOCUMENTATION.md               # 交易逻辑说明
 └── README.md                                  # 当前文档
@@ -369,6 +370,7 @@ python batch_strategy_backtest.py \
 
 - `.env.local`、`.feishu_webhook` 等密钥；
 - `.trae/` 本地 IDE 和技能配置；
+- `strategies/` 本地策略实现和研究适配代码；
 - `data/` 离线行情和回测结果；
 - `logs/` 日志；
 - `run/` pid 和 lock 文件；

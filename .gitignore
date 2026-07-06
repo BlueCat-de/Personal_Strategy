@@ -29,12 +29,5 @@ akshare-stock-data-fetcher/
 akshare-proxy-patch/
 lean_workspace/
 
-# Strategy crawler output can be large and noisy. Keep only curated AkShare
-# adapters and documentation under version control.
-strategies/**
-!strategies/.gitkeep
-!strategies/**/
-!strategies/akshare_strategy_runtime.py
-!strategies/AKSHARE_MIGRATION_SUMMARY.md
-!strategies/**/akshare_*.py
-!strategies/ai_native/**
+# Local strategy implementations and research adapters.
+strategies/
