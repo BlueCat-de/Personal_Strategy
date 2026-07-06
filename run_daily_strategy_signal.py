@@ -33,6 +33,7 @@ DEFAULT_DATA_DIR = REPO_ROOT / "data/offline/a_share_12m_tencent_sina"
 DEFAULT_OUTPUT_BASE = REPO_ROOT / "data/backtests/daily_strategy_signals"
 DEFAULT_STRATEGY = REPO_ROOT / "strategies/ai_native/small_account_high_conviction_policy.py"
 DEFAULT_WEBHOOK_FILE = REPO_ROOT / ".feishu_webhook"
+DEFAULT_LIVE_STATE_FILE = REPO_ROOT / "run/daily_strategy_live_state.json"
 
 
 def yyyymmdd(value: pd.Timestamp) -> str:
@@ -213,10 +214,75 @@ def analyze_strategy_output(output_dir: Path, data_dir: Path, target_date: str, 
         "cash": cash,
         "daily_return": daily_return,
         "total_return": total_return,
+        "backtest_final_equity": final_equity,
+        "backtest_cash": cash,
+        "backtest_daily_return": daily_return,
+        "backtest_total_return": total_return,
         "holdings": holdings,
         "actions": actions,
         "adjustment_required": bool(actions),
     }
+
+
+def load_live_state(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning("Failed to read live state %s: %s", path, exc)
+        return {}
+
+
+def write_live_state(path: Path, state: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def apply_live_account_state(summary: dict, args: argparse.Namespace, latest_data_date: str | None) -> dict:
+    """Report PnL from the live tracking start date, not from historical backtest start."""
+    state_path = Path(args.live_state_file)
+    state = {} if args.reset_live_state else load_live_state(state_path)
+    target_date = str(summary["target_date"])
+    initial_cash = float(args.initial_cash)
+
+    if not state:
+        state = {
+            "baseline_date": target_date,
+            "initial_cash": initial_cash,
+            "current_equity": initial_cash,
+            "last_target_date": target_date,
+            "last_backtest_equity": summary.get("backtest_final_equity"),
+            "latest_data_date": latest_data_date,
+        }
+        live_daily_return = 0.0
+    else:
+        current_equity = float(state.get("current_equity", initial_cash))
+        last_target_date = str(state.get("last_target_date", ""))
+        if target_date > last_target_date:
+            live_daily_return = float(summary.get("backtest_daily_return", 0.0))
+            current_equity *= 1.0 + live_daily_return
+            state["current_equity"] = current_equity
+            state["last_target_date"] = target_date
+            state["last_backtest_equity"] = summary.get("backtest_final_equity")
+            state["latest_data_date"] = latest_data_date
+        else:
+            live_daily_return = 0.0
+
+    state["initial_cash"] = initial_cash
+    state.setdefault("baseline_date", target_date)
+    state.setdefault("current_equity", initial_cash)
+    write_live_state(state_path, state)
+
+    live_equity = float(state.get("current_equity", initial_cash))
+    summary["reporting_mode"] = "live_state"
+    summary["live_baseline_date"] = state.get("baseline_date", target_date)
+    summary["live_state_file"] = str(state_path)
+    summary["final_equity"] = live_equity
+    summary["cash"] = live_equity if not summary.get("holdings") else float(summary.get("backtest_cash", live_equity))
+    summary["daily_return"] = live_daily_return
+    summary["total_return"] = live_equity / initial_cash - 1.0 if initial_cash else 0.0
+    return summary
 
 
 def build_feishu_message(summary: dict) -> str:
@@ -244,6 +310,7 @@ def build_feishu_message(summary: dict) -> str:
     lines.extend(
         [
             f"策略：small_account_high_conviction_policy v4",
+            f"统计口径：从{summary.get('live_baseline_date', summary.get('target_date', '-'))}开始的实盘模拟跟踪",
             f"初始本金：{float(summary.get('initial_cash', 0.0)):.2f}",
             f"最终权益：{float(summary.get('final_equity', 0.0)):.2f}",
             f"当日收益率：{float(summary.get('daily_return', 0.0)):.2%}",
@@ -271,7 +338,7 @@ def build_feishu_message(summary: dict) -> str:
     else:
         lines.append("当前目标持仓：空仓。")
     lines.append(f"输出目录：{summary.get('output_dir', '-')}")
-    lines.append("说明：该信息基于本地回测撮合口径，实盘下单前需核对账户实际持仓。")
+    lines.append("说明：持仓信号来自本地回测撮合，收益从实盘模拟启用日重新计数；实盘下单前需核对账户实际持仓。")
     return "\n".join(lines)
 
 
@@ -334,6 +401,7 @@ def run_once(args: argparse.Namespace) -> dict:
         raise RuntimeError(f"Strategy command failed with code {completed.returncode}; see {output_dir}")
 
     summary = analyze_strategy_output(output_dir, data_dir, target_date, args.initial_cash)
+    summary = apply_live_account_state(summary, args, latest_data_date)
     summary["latest_data_date"] = latest_data_date
     write_summary(output_dir, summary)
     return summary
@@ -392,6 +460,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--end-date", help="YYYYMMDD. Defaults to today.")
     parser.add_argument("--limit", type=int, default=3046)
     parser.add_argument("--initial-cash", type=float, default=100000.0, help="Assumed live account capital for daily PnL reporting.")
+    parser.add_argument("--live-state-file", default=str(DEFAULT_LIVE_STATE_FILE), help="Local state file for live PnL reporting.")
+    parser.add_argument("--reset-live-state", action="store_true", help="Reset live PnL baseline to the current target date.")
     parser.add_argument("--timeout", type=int, default=1800)
     parser.add_argument("--allow-stale-data", action="store_true", help="Run even if prices_long.csv is not updated to target date.")
     parser.add_argument("--dry-run", action="store_true")
