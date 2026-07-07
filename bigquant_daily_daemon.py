@@ -227,6 +227,18 @@ def due(time_text: str) -> bool:
     return datetime.now().strftime("%H:%M") >= time_text
 
 
+def should_run_data_update(state: dict, today: str) -> bool:
+    retry_after = float(state.get("next_data_retry_after", 0.0) or 0.0)
+    return state.get("data_last_result_date") != today or (
+        state.get("data_last_status") == "failed" and time.time() >= retry_after
+    )
+
+
+def should_run_strategy(state: dict, latest_data_date: str | None, today: str) -> bool:
+    data_ready = latest_data_date == today and state.get("data_last_status") != "in_progress"
+    return bool(data_ready and state.get("strategy_success_data_date") != latest_data_date)
+
+
 def build_conda_python(conda_path: Path, env_name: str, script: str, extra_args: list[str]) -> list[str]:
     return [str(conda_path), "run", "-n", env_name, "python", "-u", script, *extra_args]
 
@@ -234,6 +246,10 @@ def build_conda_python(conda_path: Path, env_name: str, script: str, extra_args:
 def run_data_update(args: argparse.Namespace, state: dict) -> dict:
     today = today_iso()
     log_path = Path(args.log_dir) / f"{compact_date(today)}_data_update.log"
+    state["data_last_attempt_date"] = today
+    state["data_last_status"] = "in_progress"
+    state["data_started_at"] = now_text()
+    save_json(Path(args.state_file), state)
     command = build_conda_python(
         Path(args.conda),
         args.conda_env,
@@ -256,6 +272,7 @@ def run_data_update(args: argparse.Namespace, state: dict) -> dict:
     if code == 0 and summary.get("status") in {"updated", "skipped"}:
         state["data_last_result_date"] = today
         state["data_last_status"] = summary.get("status")
+        state["data_finished_at"] = now_text()
         state["latest_bigquant_data_date"] = latest
         state.pop("next_data_retry_after", None)
         save_json(Path(args.state_file), state)
@@ -275,6 +292,7 @@ def run_data_update(args: argparse.Namespace, state: dict) -> dict:
     state["data_last_status"] = "failed"
     retry_at = time.time() + args.retry_seconds
     state["next_data_retry_after"] = retry_at
+    state["data_finished_at"] = now_text()
     save_json(Path(args.state_file), state)
     tail = "\n".join(output.splitlines()[-20:])
     message = (
@@ -293,6 +311,10 @@ def run_data_update(args: argparse.Namespace, state: dict) -> dict:
 def run_strategy(args: argparse.Namespace, state: dict, data_date: str) -> dict:
     output_dir = Path(args.strategy_output_root) / compact_date(data_date)
     log_path = Path(args.log_dir) / f"{compact_date(data_date)}_strategy.log"
+    state["strategy_attempt_data_date"] = data_date
+    state["strategy_last_status"] = "in_progress"
+    state["strategy_started_at"] = now_text()
+    save_json(Path(args.state_file), state)
     command = build_conda_python(
         Path(args.conda),
         args.conda_env,
@@ -319,6 +341,7 @@ def run_strategy(args: argparse.Namespace, state: dict, data_date: str) -> dict:
         result = summarize_strategy_output(output_dir)
         state["strategy_success_data_date"] = data_date
         state["strategy_last_status"] = "success"
+        state["strategy_finished_at"] = now_text()
         save_json(Path(args.state_file), state)
         positions = format_positions(result.get("positions", []))
         transactions = format_transactions(result.get("transactions", []))
@@ -343,6 +366,7 @@ def run_strategy(args: argparse.Namespace, state: dict, data_date: str) -> dict:
         return result
 
     state["strategy_last_status"] = "failed"
+    state["strategy_finished_at"] = now_text()
     save_json(Path(args.state_file), state)
     tail = "\n".join(output.splitlines()[-20:])
     message = (
@@ -358,6 +382,31 @@ def run_strategy(args: argparse.Namespace, state: dict, data_date: str) -> dict:
     return {"status": "failed"}
 
 
+def recover_interrupted_state(args: argparse.Namespace) -> dict:
+    state_path = Path(args.state_file)
+    state = load_json(state_path, {})
+    notices: list[str] = []
+    if state.get("data_last_status") == "in_progress":
+        notices.append(
+            "检测到上次 BigQuant 取数任务处于 in_progress，可能因睡眠、关机或进程中断未写入完成状态；本次启动后会按调度重新补跑。"
+        )
+        state["data_last_status"] = "interrupted"
+        state["data_recovered_at"] = now_text()
+    if state.get("strategy_last_status") == "in_progress":
+        notices.append(
+            "检测到上次 BigQuant 策略任务处于 in_progress，可能因睡眠、关机或进程中断未写入完成状态；本次启动后会在数据就绪后重新补跑。"
+        )
+        state["strategy_last_status"] = "interrupted"
+        state["strategy_recovered_at"] = now_text()
+    if notices:
+        save_json(state_path, state)
+        send_feishu(
+            Path(args.webhook_file),
+            "BigQuant 自动任务故障恢复\n" + "\n".join(f"- {item}" for item in notices),
+        )
+    return state
+
+
 def daemon_loop(args: argparse.Namespace) -> None:
     acquire_pid_file(Path(args.pid_file))
     running = True
@@ -369,6 +418,7 @@ def daemon_loop(args: argparse.Namespace) -> None:
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
+    recover_interrupted_state(args)
     if not args.no_startup_notify:
         send_feishu(
             Path(args.webhook_file),
@@ -385,19 +435,17 @@ def daemon_loop(args: argparse.Namespace) -> None:
             state = load_json(Path(args.state_file), {})
             today = today_iso()
             if due(args.data_time):
-                retry_after = float(state.get("next_data_retry_after", 0.0) or 0.0)
-                should_run_data = state.get("data_last_result_date") != today or (
-                    state.get("data_last_status") == "failed" and time.time() >= retry_after
-                )
-                if should_run_data:
+                if should_run_data_update(state, today):
                     print(f"{now_text()} data update due", flush=True)
                     run_data_update(args, state)
                     state = load_json(Path(args.state_file), {})
 
             latest_data_date = state.get("latest_bigquant_data_date") or read_data_latest(Path(args.data_dir))
-            if due(args.strategy_time) and latest_data_date == today and state.get("strategy_success_data_date") != latest_data_date:
+            if due(args.strategy_time) and should_run_strategy(state, latest_data_date, today):
                 print(f"{now_text()} strategy run due for {latest_data_date}", flush=True)
                 run_strategy(args, state, latest_data_date)
+            elif due(args.strategy_time) and state.get("data_last_status") == "in_progress":
+                print(f"{now_text()} strategy waiting: BigQuant data update still in progress", flush=True)
 
             time.sleep(args.interval_seconds)
     finally:

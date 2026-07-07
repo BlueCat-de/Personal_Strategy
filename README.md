@@ -284,7 +284,7 @@ win_ratio=54.55
 
 ```bash
 mkdir -p logs run
-nohup /opt/homebrew/Caskroom/miniforge/base/bin/conda run -n bigquant python -u bigquant_daily_daemon.py \
+nohup /opt/homebrew/Caskroom/miniforge/base/envs/bigquant/bin/python -u bigquant_daily_daemon.py \
   --data-time 16:30 \
   --strategy-time 16:50 \
   --interval-seconds 300 \
@@ -292,11 +292,24 @@ nohup /opt/homebrew/Caskroom/miniforge/base/bin/conda run -n bigquant python -u 
 echo $! > run/bigquant_daily_daemon_launcher.pid
 ```
 
+macOS 登录后自动拉起：
+
+```bash
+python3 install_bigquant_launchd.py
+```
+
+该命令会安装 `~/Library/LaunchAgents/com.personal-strategy.bigquant-daily.plist`，由 `launchd` 负责在登录后启动并在异常退出后拉起 daemon。卸载命令：
+
+```bash
+python3 install_bigquant_launchd.py --uninstall
+```
+
 默认行为：
 
 - 16:30 后检查 BigQuant 最新交易日并增量更新 `data/offline/a_share_12m_bigquant/prices_long.csv`。
 - 16:50 后仅在本地数据已更新到当天交易日时运行 `bigquant_strategy.py`。
 - 如果取数超过 16:50，策略会在取数结束后继续执行。
+- 取数和策略执行前会写入 `in_progress` 状态；若机器睡眠、关机或进程被杀，重启后会识别上次未完成状态并补跑。
 - 飞书消息标题会明确标注 `BigQuant 数据`。
 - 默认策略版本是 `v4`。如需旁路观察成交量风险过滤版本，可设置环境变量 `BIGQUANT_STRATEGY_VERSION=v4_volume_risk_filter` 后再启动 daemon。
 
