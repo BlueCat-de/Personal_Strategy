@@ -5,8 +5,7 @@ The output schema matches the current local strategy runtime:
 
     date,symbol,open,high,low,close,volume,amount,turnover
 
-This script is isolated from the production Tencent/Sina pipeline. It is meant
-for side-by-side data validation before any production migration.
+This script builds a local BigQuant cache to avoid repeated SDK quota usage.
 """
 
 from __future__ import annotations
@@ -29,13 +28,22 @@ from bigquant_provider import (
     init_bigquant,
     normalize_symbol,
 )
-from generate_offline_a_share_data import RUNTIME_COLUMNS
-from stock_feature_pipeline import is_bse, is_chinext, is_star_market
 
 
 LOGGER = logging.getLogger("offline_a_share_bigquant")
 DEFAULT_OUTPUT_DIR = Path("data/offline/a_share_12m_bigquant")
 DEFAULT_ENV_FILE = Path(__file__).resolve().parent / ".env.local"
+RUNTIME_COLUMNS = [
+    "date",
+    "symbol",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "amount",
+    "turnover",
+]
 
 
 @dataclass(frozen=True)
@@ -78,6 +86,19 @@ def compute_date_window(end_date: str | None, months: int, warmup_days: int) -> 
 
 def iso_date(value: str) -> str:
     return pd.to_datetime(value).strftime("%Y-%m-%d")
+
+
+def is_chinext(symbol: str) -> bool:
+    return normalize_symbol(symbol).startswith(("300", "301"))
+
+
+def is_star_market(symbol: str) -> bool:
+    return normalize_symbol(symbol).startswith(("688", "689"))
+
+
+def is_bse(symbol: str) -> bool:
+    symbol = normalize_symbol(symbol)
+    return symbol.startswith(("4", "8", "920"))
 
 
 def atomic_write_text(path: Path, content: str) -> None:
@@ -206,7 +227,7 @@ def write_manifest(config: BigQuantOfflineConfig, universe: pd.DataFrame, symbol
     saved = [record for record in symbol_records if record["status"] in {"saved", "cached"} and record["rows"] > 0]
     manifest = {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
-        "schema": "akshare_strategy_runtime_ohlcv_v1",
+        "schema": "bigquant_ohlcv_cache_v1",
         "source": "bigquant",
         "datasource": config.datasource,
         "columns": RUNTIME_COLUMNS,
@@ -225,17 +246,16 @@ def write_manifest(config: BigQuantOfflineConfig, universe: pd.DataFrame, symbol
             "BigQuant volume is shares; this dataset stores volume in hands to match the existing project schema.",
         ],
         "usage": {
-            "env": f"export AKSHARE_OFFLINE_DATA_DIR={config.output_dir}",
+            "env": f"export BIGQUANT_CACHE_DIR={config.output_dir}",
             "example": (
-                "AKSHARE_OFFLINE_DATA_DIR="
-                f"{config.output_dir} "
-                "python3 strategies/ai_native/small_account_high_conviction_policy.py "
+                "python bigquant_strategy.py "
                 "--warmup-start-date "
                 f"{config.fetch_start_date} "
                 "--start-date "
                 f"{config.test_start_date} "
                 "--end-date "
-                f"{config.test_end_date}"
+                f"{config.test_end_date} "
+                f"--cache-dir {config.output_dir}"
             ),
         },
     }

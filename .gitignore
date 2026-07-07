@@ -21,13 +21,8 @@ env/
 data/
 logs/
 run/
+.bigquant/
 .crawler_state/
 
-# External research clones; keep the project code self-contained.
-akshare/
-akshare-stock-data-fetcher/
-akshare-proxy-patch/
-lean_workspace/
-
-# Local strategy implementations and research adapters.
+# Local private strategy experiments.
 strategies/

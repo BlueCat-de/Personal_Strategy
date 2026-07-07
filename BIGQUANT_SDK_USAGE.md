@@ -610,14 +610,12 @@ bq auth logout
 
 ## 项目内使用建议
 
-本项目当前生产链路仍使用本地离线行情和私有策略目录。BigQuant SDK 建议先作为独立研究环境使用，不要直接替换正在运行的每日取数和飞书推送链路。
+本分支已经切换为 BigQuant SDK-only：
 
-建议路径：
-
-1. 在 `bigquant` conda 环境中验证 BigQuant 账号认证和 DAI 查询。
-2. 用 DAI 拉取小样本数据，与 `data/offline/a_share_12m_tencent_sina` 的字段口径对比。
-3. 单独写 BigQuant 研究脚本，不直接接入生产 daemon。
-4. 确认数据字段、复权、停牌、涨跌停、ST、板块过滤都一致后，再考虑接入本项目策略流程。
+1. 先用 `generate_offline_a_share_bigquant.py` 生成本地 BigQuant 行情缓存。
+2. 再用 `bigquant_strategy.py` 生成权重信号，并交给 BigTrader 回测。
+3. 回测命令建议带上 `HOME="$(pwd)"`，让 SDK 日志写入项目内被忽略的 `.bigquant/` 目录。
+4. 数据读取只选择必要字段，不对宽表执行 `SELECT *`，避免浪费每周 cell 额度。
 
 敏感信息约束：
 

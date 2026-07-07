@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """BigQuant SDK data adapter.
 
-This module is intentionally isolated from the current production Tencent/Sina
-pipeline. It converts BigQuant DAI output into the existing local runtime schema
-used by the project.
+This module converts BigQuant DAI output into the local cache schema used by
+the project.
 
 BigQuant ``cn_stock_bar1d`` stores post-adjusted prices and share-based volume.
-The current project expects front-adjusted-ish prices and volume in hands, so
-the adapter defaults to ``adjust="qfq"`` and ``volume_unit="hand"``.
+The strategy expects front-adjusted prices and volume in hands, so the adapter
+defaults to ``adjust="qfq"`` and ``volume_unit="hand"``.
 """
 
 from __future__ import annotations
