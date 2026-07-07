@@ -273,9 +273,36 @@ win_ratio=54.55
 
 该结果使用 BigQuant 数据和 BigTrader 撮合，已经不再沿用旧本地 runtime 的收益口径。修复 BigTrader 非调仓日持仓延续后，结果已接近旧 runtime 在同一 BigQuant 数据上的回测结果。
 
+## 每日自动化
+
+本分支提供 BigQuant-only 的轻量后台任务：
+
+- `update_offline_a_share_bigquant_daily.py`：每日增量更新 BigQuant 离线数据，只拉取本地缺失的最新交易日，避免每天重拉完整 12 个月数据。
+- `bigquant_daily_daemon.py`：串行调度取数和策略检查，并把结果推送到 `.feishu_webhook` 中配置的飞书机器人。
+
+后台运行示例：
+
+```bash
+mkdir -p logs run
+nohup /opt/homebrew/Caskroom/miniforge/base/bin/conda run -n bigquant python -u bigquant_daily_daemon.py \
+  --data-time 16:30 \
+  --strategy-time 16:50 \
+  --interval-seconds 300 \
+  > logs/bigquant_daily_daemon.nohup.log 2>&1 &
+echo $! > run/bigquant_daily_daemon_launcher.pid
+```
+
+默认行为：
+
+- 16:30 后检查 BigQuant 最新交易日并增量更新 `data/offline/a_share_12m_bigquant/prices_long.csv`。
+- 16:50 后仅在本地数据已更新到当天交易日时运行 `bigquant_strategy.py`。
+- 如果取数超过 16:50，策略会在取数结束后继续执行。
+- 飞书消息标题会明确标注 `BigQuant 数据`。
+- 默认策略版本是 `v4`。如需旁路观察成交量风险过滤版本，可设置环境变量 `BIGQUANT_STRATEGY_VERSION=v4_volume_risk_filter` 后再启动 daemon。
+
 ## 注意事项
 
 - BigTrader 会按传入的 `instruments` 再读取行情。若信号为空，脚本会直接失败，避免 BigTrader 加载全市场消耗 quota。
 - `cn_stock_prefactors` 等宽表字段很多，不要 `SELECT *`。
 - 本项目只读取必要字段。
-- 当前分支不再维护旧每日 daemon 和飞书推送，后续如果要恢复自动化，应基于 BigQuant SDK 重新设计，而不是复活旧链路。
+- 每日自动化已经基于 BigQuant SDK 重新实现，不依赖旧 Tencent/Sina/AkShare daemon。

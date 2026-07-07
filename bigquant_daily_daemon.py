@@ -1,0 +1,424 @@
+#!/usr/bin/env python3
+"""Run daily BigQuant data update and strategy checks with Feishu notifications."""
+
+from __future__ import annotations
+
+import argparse
+import ast
+import json
+import os
+import re
+import signal
+import subprocess
+import time
+import urllib.request
+from datetime import datetime
+from pathlib import Path
+
+import pandas as pd
+
+
+REPO_ROOT = Path(__file__).resolve().parent
+DEFAULT_CONDA = Path("/opt/homebrew/Caskroom/miniforge/base/bin/conda")
+DEFAULT_WEBHOOK_FILE = REPO_ROOT / ".feishu_webhook"
+DEFAULT_STATE_FILE = REPO_ROOT / "run/bigquant_daily_daemon_state.json"
+DEFAULT_PID_FILE = REPO_ROOT / "run/bigquant_daily_daemon.pid"
+DEFAULT_LOG_DIR = REPO_ROOT / "logs/bigquant_daily"
+DEFAULT_DATA_DIR = REPO_ROOT / "data/offline/a_share_12m_bigquant"
+DEFAULT_STRATEGY_OUTPUT_ROOT = REPO_ROOT / "data/backtests/daily_bigquant_strategy_signals"
+
+
+def now_text() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def compact_date(value: str | datetime) -> str:
+    return pd.to_datetime(value).strftime("%Y%m%d")
+
+
+def iso_date(value: str | datetime) -> str:
+    return pd.to_datetime(value).strftime("%Y-%m-%d")
+
+
+def today_iso() -> str:
+    return datetime.now().strftime("%Y-%m-%d")
+
+
+def load_json(path: Path, default: dict) -> dict:
+    if not path.exists():
+        return default
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return default
+
+
+def save_json(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def append_log(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(content)
+        if not content.endswith("\n"):
+            handle.write("\n")
+
+
+def load_webhooks(path: Path) -> list[str]:
+    if not path.exists():
+        return []
+    text = path.read_text(encoding="utf-8")
+    urls = re.findall(r"https://open\.feishu\.cn/open-apis/bot/v2/hook/[A-Za-z0-9_-]+", text)
+    return sorted(set(urls))
+
+
+def send_feishu(webhook_file: Path, content: str) -> None:
+    urls = load_webhooks(webhook_file)
+    if not urls:
+        print(f"{now_text()} WARNING no Feishu webhook configured: {webhook_file}", flush=True)
+        return
+    payload = json.dumps({"msg_type": "text", "content": {"text": content}}, ensure_ascii=False).encode("utf-8")
+    for url in urls:
+        request = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                response.read()
+        except Exception as exc:
+            print(f"{now_text()} ERROR Feishu push failed: {type(exc).__name__}: {exc}", flush=True)
+
+
+def pid_is_running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def acquire_pid_file(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        try:
+            old_pid = int(path.read_text(encoding="utf-8").strip())
+            if pid_is_running(old_pid):
+                raise SystemExit(f"Daemon already running with PID {old_pid}")
+        except ValueError:
+            pass
+    path.write_text(str(os.getpid()), encoding="utf-8")
+
+
+def remove_pid_file(path: Path) -> None:
+    try:
+        if path.exists() and path.read_text(encoding="utf-8").strip() == str(os.getpid()):
+            path.unlink()
+    except Exception:
+        pass
+
+
+def run_command(command: list[str], cwd: Path, log_path: Path) -> tuple[int, str]:
+    started = f"\n[{now_text()}] RUN {' '.join(command)}\n"
+    append_log(log_path, started)
+    env = os.environ.copy()
+    env["HOME"] = str(REPO_ROOT)
+    process = subprocess.run(command, cwd=str(cwd), env=env, text=True, capture_output=True)
+    output = (process.stdout or "") + (process.stderr or "")
+    append_log(log_path, output)
+    append_log(log_path, f"[{now_text()}] EXIT {process.returncode}\n")
+    return process.returncode, output
+
+
+def read_data_latest(data_dir: Path) -> str | None:
+    prices_file = data_dir / "prices_long.csv"
+    if not prices_file.exists():
+        return None
+    try:
+        dates = pd.read_csv(prices_file, usecols=["date"])["date"]
+    except Exception:
+        return None
+    if dates.empty:
+        return None
+    return iso_date(str(dates.max()))
+
+
+def parse_positions(value: object) -> list[dict]:
+    text = str(value)
+    if not text or text == "[]" or text == "nan":
+        return []
+    try:
+        parsed = ast.literal_eval(text)
+    except Exception:
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+def parse_transactions(value: object) -> list[dict]:
+    return parse_positions(value)
+
+
+def summarize_strategy_output(output_dir: Path) -> dict:
+    summary_path = output_dir / "bigtrader_summary.json"
+    raw_perf_path = output_dir / "bigtrader_raw_perf.csv"
+    result: dict = {}
+    if summary_path.exists():
+        summary_json = json.loads(summary_path.read_text(encoding="utf-8"))
+        result.update(summary_json.get("summary", {}))
+        result["strategy"] = summary_json.get("strategy")
+        result["signal_rows"] = summary_json.get("signal_rows")
+        result["traded_instruments"] = summary_json.get("traded_instruments")
+    if raw_perf_path.exists():
+        raw = pd.read_csv(raw_perf_path)
+        if not raw.empty:
+            last = raw.iloc[-1]
+            result["final_date"] = str(last.get("date"))
+            result["portfolio_value"] = float(last.get("portfolio_value", 0.0))
+            result["ending_cash"] = float(last.get("ending_cash", 0.0))
+            result["daily_return"] = float(last.get("returns", 0.0))
+            result["positions"] = parse_positions(last.get("positions"))
+            result["transactions"] = parse_transactions(last.get("transactions"))
+    return result
+
+
+def format_positions(positions: list[dict]) -> str:
+    if not positions:
+        return "空仓"
+    parts = []
+    for item in positions:
+        instrument = str(item.get("instrument", ""))
+        amount = item.get("amount", 0)
+        weight = float(item.get("hold_percent", 0.0))
+        parts.append(f"{instrument} {amount}股 权重{weight:.2%}")
+    return "；".join(parts)
+
+
+def format_transactions(transactions: list[dict]) -> str:
+    if not transactions:
+        return "无。维持当前目标持仓，不主动调仓。"
+    parts = []
+    for item in transactions:
+        instrument = str(item.get("instrument", ""))
+        amount = int(item.get("amount", 0))
+        side = "买入" if amount > 0 else "卖出"
+        price = float(item.get("price", 0.0))
+        parts.append(f"{side} {instrument} {abs(amount)}股 @ {price:.2f}")
+    return "；".join(parts)
+
+
+def due(time_text: str) -> bool:
+    return datetime.now().strftime("%H:%M") >= time_text
+
+
+def build_conda_python(conda_path: Path, env_name: str, script: str, extra_args: list[str]) -> list[str]:
+    return [str(conda_path), "run", "-n", env_name, "python", "-u", script, *extra_args]
+
+
+def run_data_update(args: argparse.Namespace, state: dict) -> dict:
+    today = today_iso()
+    log_path = Path(args.log_dir) / f"{compact_date(today)}_data_update.log"
+    command = build_conda_python(
+        Path(args.conda),
+        args.conda_env,
+        "update_offline_a_share_bigquant_daily.py",
+        [
+            "--end-date",
+            today,
+            "--output-dir",
+            args.data_dir,
+            "--env-file",
+            args.env_file,
+            "--batch-size",
+            str(args.batch_size),
+        ],
+    )
+    code, output = run_command(command, REPO_ROOT, log_path)
+    summary_path = Path(args.data_dir) / "daily_update_summary.json"
+    summary = load_json(summary_path, {})
+    latest = summary.get("latest_local_date") or summary.get("latest_bigquant_date") or read_data_latest(Path(args.data_dir))
+    if code == 0 and summary.get("status") in {"updated", "skipped"}:
+        state["data_last_result_date"] = today
+        state["data_last_status"] = summary.get("status")
+        state["latest_bigquant_data_date"] = latest
+        state.pop("next_data_retry_after", None)
+        save_json(Path(args.state_file), state)
+        message = (
+            "BigQuant 数据每日取数：成功\n"
+            f"运行时间：{now_text()}\n"
+            f"请求日期：{today}\n"
+            f"BigQuant 最新交易日：{summary.get('latest_bigquant_date')}\n"
+            f"本地数据截止：{latest}\n"
+            f"状态：{summary.get('status')}\n"
+            f"说明：{summary.get('reason', '已完成增量更新')}\n"
+            f"输出目录：{args.data_dir}"
+        )
+        send_feishu(Path(args.webhook_file), message)
+        return summary
+
+    state["data_last_status"] = "failed"
+    retry_at = time.time() + args.retry_seconds
+    state["next_data_retry_after"] = retry_at
+    save_json(Path(args.state_file), state)
+    tail = "\n".join(output.splitlines()[-20:])
+    message = (
+        "BigQuant 数据每日取数：失败\n"
+        f"运行时间：{now_text()}\n"
+        f"请求日期：{today}\n"
+        f"退出码：{code}\n"
+        f"下次重试：约 {args.retry_seconds // 60} 分钟后\n"
+        f"日志：{log_path}\n"
+        f"错误摘要：\n{tail[-1500:]}"
+    )
+    send_feishu(Path(args.webhook_file), message)
+    return {"status": "failed", "latest_local_date": latest}
+
+
+def run_strategy(args: argparse.Namespace, state: dict, data_date: str) -> dict:
+    output_dir = Path(args.strategy_output_root) / compact_date(data_date)
+    log_path = Path(args.log_dir) / f"{compact_date(data_date)}_strategy.log"
+    command = build_conda_python(
+        Path(args.conda),
+        args.conda_env,
+        "bigquant_strategy.py",
+        [
+            "--strategy-version",
+            args.strategy_version,
+            "--warmup-start-date",
+            args.warmup_start_date,
+            "--start-date",
+            args.strategy_start_date,
+            "--end-date",
+            data_date,
+            "--initial-cash",
+            str(args.initial_cash),
+            "--prices-file",
+            str(Path(args.data_dir) / "prices_long.csv"),
+            "--output-dir",
+            str(output_dir),
+        ],
+    )
+    code, output = run_command(command, REPO_ROOT, log_path)
+    if code == 0:
+        result = summarize_strategy_output(output_dir)
+        state["strategy_success_data_date"] = data_date
+        state["strategy_last_status"] = "success"
+        save_json(Path(args.state_file), state)
+        positions = format_positions(result.get("positions", []))
+        transactions = format_transactions(result.get("transactions", []))
+        message = (
+            "BigQuant 数据策略每日检查：成功\n"
+            f"运行时间：{now_text()}\n"
+            f"数据截止：{data_date}\n"
+            f"策略版本：{args.strategy_version}\n"
+            f"初始本金：{args.initial_cash:.2f}\n"
+            f"最终权益：{float(result.get('portfolio_value', 0.0)):.2f}\n"
+            f"当日收益率：{float(result.get('daily_return', 0.0)):.2%}\n"
+            f"累计收益率：{float(result.get('return_ratio', 0.0)):.2f}%\n"
+            f"Sharpe：{float(result.get('sharp_ratio', 0.0)):.2f}\n"
+            f"最大回撤：{float(result.get('max_drawdown', 0.0)):.2f}%\n"
+            f"现金：{float(result.get('ending_cash', 0.0)):.2f}\n"
+            f"持仓调整：{transactions}\n"
+            f"当前目标持仓：{positions}\n"
+            f"输出目录：{output_dir}\n"
+            "说明：该信息基于 BigQuant 数据与 BigTrader 回测口径，实盘下单前需核对账户实际持仓。"
+        )
+        send_feishu(Path(args.webhook_file), message)
+        return result
+
+    state["strategy_last_status"] = "failed"
+    save_json(Path(args.state_file), state)
+    tail = "\n".join(output.splitlines()[-20:])
+    message = (
+        "BigQuant 数据策略每日检查：失败\n"
+        f"运行时间：{now_text()}\n"
+        f"数据截止：{data_date}\n"
+        f"策略版本：{args.strategy_version}\n"
+        f"退出码：{code}\n"
+        f"日志：{log_path}\n"
+        f"错误摘要：\n{tail[-1500:]}"
+    )
+    send_feishu(Path(args.webhook_file), message)
+    return {"status": "failed"}
+
+
+def daemon_loop(args: argparse.Namespace) -> None:
+    acquire_pid_file(Path(args.pid_file))
+    running = True
+
+    def stop(signum, frame) -> None:
+        _ = (signum, frame)
+        nonlocal running
+        running = False
+
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    if not args.no_startup_notify:
+        send_feishu(
+            Path(args.webhook_file),
+            "BigQuant 自动任务已启动\n"
+            f"启动时间：{now_text()}\n"
+            f"取数时间：每日 {args.data_time}\n"
+            f"策略时间：每日 {args.strategy_time}\n"
+            f"策略版本：{args.strategy_version}\n"
+            f"数据目录：{args.data_dir}",
+        )
+    print(f"{now_text()} BigQuant daily daemon started pid={os.getpid()}", flush=True)
+    try:
+        while running:
+            state = load_json(Path(args.state_file), {})
+            today = today_iso()
+            if due(args.data_time):
+                retry_after = float(state.get("next_data_retry_after", 0.0) or 0.0)
+                should_run_data = state.get("data_last_result_date") != today or (
+                    state.get("data_last_status") == "failed" and time.time() >= retry_after
+                )
+                if should_run_data:
+                    print(f"{now_text()} data update due", flush=True)
+                    run_data_update(args, state)
+                    state = load_json(Path(args.state_file), {})
+
+            latest_data_date = state.get("latest_bigquant_data_date") or read_data_latest(Path(args.data_dir))
+            if due(args.strategy_time) and latest_data_date == today and state.get("strategy_success_data_date") != latest_data_date:
+                print(f"{now_text()} strategy run due for {latest_data_date}", flush=True)
+                run_strategy(args, state, latest_data_date)
+
+            time.sleep(args.interval_seconds)
+    finally:
+        remove_pid_file(Path(args.pid_file))
+        print(f"{now_text()} BigQuant daily daemon stopped", flush=True)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Schedule BigQuant daily data update and strategy runs.")
+    parser.add_argument("--conda", default=str(DEFAULT_CONDA))
+    parser.add_argument("--conda-env", default="bigquant")
+    parser.add_argument("--data-time", default="16:30")
+    parser.add_argument("--strategy-time", default="16:50")
+    parser.add_argument("--interval-seconds", type=int, default=300)
+    parser.add_argument("--retry-seconds", type=int, default=1800)
+    parser.add_argument("--batch-size", type=int, default=100)
+    parser.add_argument("--data-dir", default=str(DEFAULT_DATA_DIR))
+    parser.add_argument("--strategy-output-root", default=str(DEFAULT_STRATEGY_OUTPUT_ROOT))
+    parser.add_argument("--strategy-version", default=os.environ.get("BIGQUANT_STRATEGY_VERSION", "v4"))
+    parser.add_argument("--strategy-start-date", default=os.environ.get("BIGQUANT_STRATEGY_START_DATE", "2025-07-05"))
+    parser.add_argument("--warmup-start-date", default=os.environ.get("BIGQUANT_WARMUP_START_DATE", "2025-01-07"))
+    parser.add_argument("--initial-cash", type=float, default=float(os.environ.get("BIGQUANT_INITIAL_CASH", "100000")))
+    parser.add_argument("--env-file", default=str(REPO_ROOT / ".env.local"))
+    parser.add_argument("--webhook-file", default=str(DEFAULT_WEBHOOK_FILE))
+    parser.add_argument("--state-file", default=str(DEFAULT_STATE_FILE))
+    parser.add_argument("--pid-file", default=str(DEFAULT_PID_FILE))
+    parser.add_argument("--log-dir", default=str(DEFAULT_LOG_DIR))
+    parser.add_argument("--no-startup-notify", action="store_true")
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    daemon_loop(args)
+
+
+if __name__ == "__main__":
+    main()
