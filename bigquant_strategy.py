@@ -67,6 +67,13 @@ class StrategyConfig:
     stop_loss: float
     trailing_stop: float
     trend_exit_window: int
+    strategy_version: str
+    min_amount20: float
+    min_turnover20: float
+    max_turnover20: float
+    min_volume_ratio20: float
+    max_volume_ratio20: float
+    min_amount_trend60: float
     batch_size: int
     limit: int | None
     env_file: Path
@@ -279,6 +286,14 @@ def allocate_two_names(selected: list[str], vol20: pd.Series, gross: float, max_
     return weights
 
 
+def coerce_turnover_rate(turnover: pd.DataFrame) -> pd.DataFrame:
+    """Normalize turnover to decimal form when a source stores percent values."""
+    median = turnover.stack().median(skipna=True)
+    if pd.notna(median) and median > 1.0:
+        return turnover / 100.0
+    return turnover
+
+
 def append_target_snapshot(rows: list[dict], date: str, previous: pd.Series, current: pd.Series) -> None:
     """Append a full BigTrader target snapshot for an event date."""
     active_symbols = set(previous[previous > 0].index) | set(current[current > 0].index)
@@ -296,7 +311,14 @@ def build_weight_signals(bars: pd.DataFrame, config: StrategyConfig) -> pd.DataF
     close = bars.pivot(index="trade_date", columns="symbol", values="close").sort_index()
     open_ = bars.pivot(index="trade_date", columns="symbol", values="open").reindex(index=close.index, columns=close.columns).ffill().fillna(close)
     volume = bars.pivot(index="trade_date", columns="symbol", values="volume").reindex(index=close.index, columns=close.columns).ffill()
-    traded_value = (open_ * volume).replace([np.inf, -np.inf], np.nan)
+    amount = bars.pivot(index="trade_date", columns="symbol", values="amount").reindex(index=close.index, columns=close.columns)
+    turnover_rate = bars.pivot(index="trade_date", columns="symbol", values="turnover_rate").reindex(index=close.index, columns=close.columns)
+    turnover_rate = coerce_turnover_rate(turnover_rate)
+    legacy_traded_value = (open_ * volume).replace([np.inf, -np.inf], np.nan)
+    fallback_amount = open_ * volume * 100.0
+    actual_traded_value = amount.where(amount.notna() & (amount > 0), fallback_amount).replace([np.inf, -np.inf], np.nan)
+    uses_bigquant_amount = config.strategy_version in {"v4_volume_enhanced", "v4_volume_light", "v4_volume_risk_filter"}
+    traded_value = actual_traded_value if uses_bigquant_amount else legacy_traded_value
     returns = close.pct_change(fill_method=None)
     weekly_dates = set(first_trading_day_each_week(pd.to_datetime(close.index)))
     formal_start = pd.to_datetime(config.start_date)
@@ -327,6 +349,11 @@ def build_weight_signals(bars: pd.DataFrame, config: StrategyConfig) -> pd.DataF
             trailing60 = history.iloc[max(0, loc - 60) : loc + 1]
             drawdown60 = trailing60.iloc[-1] / trailing60.cummax().iloc[-1] - 1
             avg_value20 = traded_value.iloc[max(0, loc - 20) : loc + 1].mean()
+            avg_value60 = traded_value.iloc[max(0, loc - 60) : loc + 1].mean()
+            avg_turnover20 = turnover_rate.iloc[max(0, loc - 20) : loc + 1].mean()
+            avg_volume20 = volume.iloc[max(0, loc - 20) : loc + 1].mean()
+            volume_ratio20 = volume.iloc[loc] / avg_volume20
+            amount_trend60 = avg_value20 / avg_value60 - 1.0
             prev_close = history.iloc[-2]
             signal_gap = open_.iloc[loc] / prev_close - 1
 
@@ -347,17 +374,70 @@ def build_weight_signals(bars: pd.DataFrame, config: StrategyConfig) -> pd.DataF
                 & (avg_value20 > 0)
                 & vol20.notna()
             )
+            if config.strategy_version == "v4_volume_enhanced":
+                volume_confirmed = (
+                    (avg_value20 >= config.min_amount20)
+                    & (avg_turnover20 >= config.min_turnover20)
+                    & (avg_turnover20 <= config.max_turnover20)
+                    & (volume_ratio20 >= config.min_volume_ratio20)
+                    & (volume_ratio20 <= config.max_volume_ratio20)
+                    & (amount_trend60 >= config.min_amount_trend60)
+                    & avg_turnover20.notna()
+                    & volume_ratio20.notna()
+                    & amount_trend60.notna()
+                )
+                tradable = tradable & volume_confirmed
+            elif config.strategy_version == "v4_volume_risk_filter":
+                volume_risk_guard = (
+                    (avg_value20 >= config.min_amount20)
+                    & (avg_turnover20 <= config.max_turnover20)
+                    & (volume_ratio20 <= config.max_volume_ratio20)
+                    & (amount_trend60 >= config.min_amount_trend60)
+                    & avg_turnover20.notna()
+                    & volume_ratio20.notna()
+                    & amount_trend60.notna()
+                )
+                tradable = tradable & volume_risk_guard
 
-            score = (
-                0.24 * pct_rank(mom60)
-                + 0.18 * pct_rank(mom120)
-                + 0.10 * pct_rank(mom20)
-                + 0.18 * pct_rank(last / ma60 - 1)
-                + 0.16 * pct_rank(vol20, ascending=False)
-                + 0.08 * pct_rank(downside60, ascending=False)
-                + 0.04 * pct_rank(drawdown60)
-                + 0.02 * pct_rank(avg_value20)
-            )
+            if config.strategy_version == "v4_volume_enhanced":
+                score = (
+                    0.20 * pct_rank(mom60)
+                    + 0.15 * pct_rank(mom120)
+                    + 0.10 * pct_rank(mom20)
+                    + 0.15 * pct_rank(last / ma60 - 1)
+                    + 0.13 * pct_rank(vol20, ascending=False)
+                    + 0.07 * pct_rank(downside60, ascending=False)
+                    + 0.04 * pct_rank(drawdown60)
+                    + 0.06 * pct_rank(avg_value20)
+                    + 0.05 * pct_rank(avg_turnover20)
+                    + 0.03 * pct_rank(amount_trend60)
+                    + 0.02 * pct_rank(volume_ratio20, ascending=False)
+                )
+            elif config.strategy_version == "v4_volume_light":
+                turnover_balance = -((avg_turnover20 - 0.035).abs())
+                score = (
+                    0.23 * pct_rank(mom60)
+                    + 0.17 * pct_rank(mom120)
+                    + 0.10 * pct_rank(mom20)
+                    + 0.17 * pct_rank(last / ma60 - 1)
+                    + 0.15 * pct_rank(vol20, ascending=False)
+                    + 0.08 * pct_rank(downside60, ascending=False)
+                    + 0.04 * pct_rank(drawdown60)
+                    + 0.03 * pct_rank(avg_value20)
+                    + 0.02 * pct_rank(amount_trend60)
+                    + 0.01 * pct_rank(turnover_balance)
+                )
+            else:
+                score = (
+                    0.24 * pct_rank(mom60)
+                    + 0.18 * pct_rank(mom120)
+                    + 0.10 * pct_rank(mom20)
+                    + 0.18 * pct_rank(last / ma60 - 1)
+                    + 0.16 * pct_rank(vol20, ascending=False)
+                    + 0.08 * pct_rank(downside60, ascending=False)
+                    + 0.04 * pct_rank(drawdown60)
+                    + 0.02 * pct_rank(avg_value20)
+                )
             score = score[tradable.reindex(score.index).fillna(False)]
             ranked = score.dropna().sort_values(ascending=False)
             selected = ranked.head(config.max_positions).index.tolist()
@@ -466,7 +546,7 @@ def save_outputs(performance, signals: pd.DataFrame, universe: pd.DataFrame, con
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "engine": "bigquant.bigtrader",
         "data_source": "bigquant.dai",
-        "strategy": "small_account_high_conviction_policy_v4_bigquant",
+        "strategy": f"small_account_high_conviction_policy_{config.strategy_version}_bigquant",
         "config": {
             **asdict(config),
             "env_file": str(config.env_file),
@@ -509,6 +589,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stop-loss", type=float, default=0.06)
     parser.add_argument("--trailing-stop", type=float, default=0.10)
     parser.add_argument("--trend-exit-window", type=int, default=20)
+    parser.add_argument("--strategy-version", choices=["v4", "v4_volume_enhanced", "v4_volume_light", "v4_volume_risk_filter"], default="v4")
+    parser.add_argument("--min-amount20", type=float, default=30_000_000.0, help="Minimum 20-day average turnover amount for volume-enhanced selection.")
+    parser.add_argument("--min-turnover20", type=float, default=0.005, help="Minimum 20-day average turnover rate in decimal form.")
+    parser.add_argument("--max-turnover20", type=float, default=0.18, help="Maximum 20-day average turnover rate in decimal form.")
+    parser.add_argument("--min-volume-ratio20", type=float, default=0.55, help="Minimum current volume divided by 20-day average volume.")
+    parser.add_argument("--max-volume-ratio20", type=float, default=3.2, help="Maximum current volume divided by 20-day average volume.")
+    parser.add_argument("--min-amount-trend60", type=float, default=-0.35, help="Minimum 20-day amount trend versus 60-day amount.")
     parser.add_argument("--batch-size", type=int, default=100)
     parser.add_argument("--limit", type=int)
     parser.add_argument("--env-file", default=str(DEFAULT_ENV_FILE))
@@ -551,6 +638,13 @@ def main() -> None:
         stop_loss=args.stop_loss,
         trailing_stop=args.trailing_stop,
         trend_exit_window=args.trend_exit_window,
+        strategy_version=args.strategy_version,
+        min_amount20=args.min_amount20,
+        min_turnover20=args.min_turnover20,
+        max_turnover20=args.max_turnover20,
+        min_volume_ratio20=args.min_volume_ratio20,
+        max_volume_ratio20=args.max_volume_ratio20,
+        min_amount_trend60=args.min_amount_trend60,
         batch_size=args.batch_size,
         limit=args.limit,
         env_file=Path(args.env_file),
