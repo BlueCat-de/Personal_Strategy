@@ -184,6 +184,57 @@ python start.py
 
 DAI 是 BigQuant SDK 的数据查询模块，通过 SQL 查询云端金融数据，支持 Arrow Flight 高性能传输。
 
+### `cn_stock_bar1d` 字段口径
+
+官方数据表地址：
+
+```text
+https://bigquant.com/data/datasources/cn_stock_bar1d
+```
+
+该表是股票后复权日行情。字段包括：
+
+```text
+instrument    证券代码
+name          证券简称
+adjust_factor 累计后复权因子
+pre_close     昨收盘价（后复权）
+open          开盘价（后复权）
+close         收盘价（后复权）
+high          最高价（后复权）
+low           最低价（后复权）
+volume        成交量，单位为股
+deal_number   成交笔数
+amount        成交金额
+change_ratio  涨跌幅（后复权）
+turn          换手率
+upper_limit   涨停价
+lower_limit   跌停价
+date          日期
+```
+
+本项目当前离线数据使用接近前复权的价格口径，且 `volume` 使用“手”。因此接入 BigQuant 时不能直接使用原始 `open/high/low/close/volume`，需要做转换：
+
+```text
+qfq_price = hfq_price / latest_adjust_factor
+volume_hand = volume_share / 100
+turnover = turn
+```
+
+`bigquant_provider.py` 默认已经执行该转换：
+
+```python
+fetch_bigquant_daily_history_batch(
+    ["000001", "600519"],
+    start_date="2026-07-01",
+    end_date="2026-07-06",
+    adjust="qfq",
+    volume_unit="hand",
+)
+```
+
+已用 `000001` 和 `600519` 在 2026-07-01 至 2026-07-06 做过对比验证，转换后的 OHLC 与当前 Tencent/Sina 离线数据完全匹配，成交量仅有四舍五入误差。
+
 ### 基础查询
 
 ```python

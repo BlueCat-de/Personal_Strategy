@@ -74,7 +74,7 @@ data/bigquant_probe/
 
 该目录在 `data/` 下，默认不会提交。
 
-## 当前阻塞
+## 权限和口径验证结果
 
 本地 `bigquant` conda 环境安装成功：
 
@@ -85,20 +85,35 @@ bigquant-core==0.1.14
 bigtradercpp==0.1.22
 ```
 
-探针已能进入 BigQuant SDK 查询路径，但服务端返回：
+SDK 权限已开通后，探针验证通过：
 
 ```text
-请先申请SDK使用权限
+python bigquant_data_probe.py \
+  --symbols 000001,600519 \
+  --start-date 2026-07-01 \
+  --end-date 2026-07-06 \
+  --output-dir data/bigquant_probe/smoke
 ```
 
-这说明：
+结果：
 
-- Python 版本正确；
-- SDK 安装正确；
-- 本地代码已调用到 DAI；
-- 当前账号仍缺少 BigQuant SDK 数据权限。
+```text
+BigQuant rows: 8
+Local rows: 8
+Matched rows: 8
+open_median_abs_diff_pct: 0
+high_median_abs_diff_pct: 0
+low_median_abs_diff_pct: 0
+close_median_abs_diff_pct: 0
+volume_median_abs_diff_pct: 3.82851e-07
+```
 
-申请权限后可重新运行探针。
+关键结论：
+
+- `cn_stock_bar1d` 官方文档标注为后复权日行情。
+- BigQuant 价格需要用 `后复权价 / 最新 adjust_factor` 转为当前项目使用的前复权口径。
+- BigQuant `volume` 单位是股，当前项目数据是手，需要除以 100。
+- 转换后，`000001` 和 `600519` 在 2026-07-01 至 2026-07-06 的 OHLC 与当前 Tencent/Sina 离线数据完全匹配，成交量仅有四舍五入级别误差。
 
 ## 验证命令
 
@@ -141,7 +156,7 @@ Output: ...
 
 ### 阶段 2：生成 BigQuant 离线数据
 
-新增脚本：
+已新增脚本：
 
 ```text
 generate_offline_a_share_bigquant.py
@@ -155,6 +170,75 @@ generate_offline_a_share_bigquant.py
   `date,symbol,open,high,low,close,volume,amount,turnover`
 - 保持 `universe.csv`、`symbols/{symbol}.csv`、`prices_long.csv`、`manifest.json` 结构。
 - 不覆盖当前 `a_share_12m_tencent_sina` 数据。
+
+小样本 smoke test 已通过：
+
+```bash
+conda activate bigquant
+
+python generate_offline_a_share_bigquant.py \
+  --end-date 2026-07-06 \
+  --months 1 \
+  --warmup-days 5 \
+  --limit 5 \
+  --output-dir data/offline/a_share_1m_bigquant_smoke \
+  --overwrite
+```
+
+输出：
+
+```text
+rows=110
+symbols=5
+columns=date,symbol,open,high,low,close,volume,amount,turnover
+```
+
+完整 12 个月数据生成命令：
+
+```bash
+conda activate bigquant
+
+python generate_offline_a_share_bigquant.py \
+  --end-date 2026-07-06 \
+  --months 12 \
+  --warmup-days 180 \
+  --output-dir data/offline/a_share_12m_bigquant \
+  --overwrite
+```
+
+按当前股票数量估算，完整生成大约消耗 700 万至 900 万 cell，低于每周 3000 万 cell 限额。生成后应优先复用本地 CSV，避免重复消耗额度。
+
+实际完整生成结果：
+
+```text
+output=data/offline/a_share_12m_bigquant
+source=bigquant
+datasource=cn_stock_bar1d
+rows=1,084,914
+symbols=3,045
+start=2025-01-07
+end=2026-07-06
+saved_count=3,045
+empty_or_failed_count=0
+```
+
+与当前 Tencent/Sina 数据差异：
+
+```text
+Tencent/Sina: symbols=3,046 rows=1,087,885 start=2025-01-06 end=2026-07-06
+BigQuant:    symbols=3,045 rows=1,084,914 start=2025-01-07 end=2026-07-06
+local_only_symbol=600193
+```
+
+`600193` 是“退市创兴”，BigQuant 当前交易日股票池不包含它。该差异合理，后续生产股票池应进一步明确排除退市标的。
+
+生成过程中 BigQuant SDK 尝试写入：
+
+```text
+~/.bigquant/logs/telemetry/audit.jsonl
+```
+
+该路径被 Trae 沙盒拦截，导致命令退出码为 1，但数据文件已经完整生成并通过校验。后续如果需要在 Trae 内长期运行 BigQuant SDK，应考虑调整沙盒允许路径，或确认 SDK 是否支持关闭 telemetry。
 
 ### 阶段 3：现有策略无感运行
 
@@ -178,6 +262,39 @@ python strategies/ai_native/small_account_high_conviction_policy.py \
 - 调仓日期；
 - 交易股票；
 - 空仓日期。
+
+BigQuant 离线数据已完成一次策略兼容性验证：
+
+```bash
+AKSHARE_OFFLINE_DATA_DIR=/Users/bytedance/cqm/Personal_Strategy/data/offline/a_share_12m_bigquant \
+AKSHARE_INITIAL_CASH=100000 \
+python3 strategies/ai_native/small_account_high_conviction_policy.py \
+  --warmup-start-date 20250107 \
+  --start-date 20250705 \
+  --end-date 20260706 \
+  --output-dir data/backtests/small_account_bigquant_probe/20260706 \
+  --limit 3045
+```
+
+结果：
+
+```text
+final_equity=120016.40
+total_return=20.02%
+trades=82
+last_date=2026-07-06
+latest_target_holding=空仓
+```
+
+当前 Tencent/Sina 生产回测口径：
+
+```text
+backtest_final_equity=118160.30
+backtest_total_return=18.16%
+latest_target_holding=空仓
+```
+
+结论：BigQuant 数据可以被现有策略 runtime 无感读取，但收益和交易记录有差异，不能直接切生产。下一步应做逐日持仓、调仓和因子排名差异分析。
 
 ### 阶段 4：每日增量更新旁路
 

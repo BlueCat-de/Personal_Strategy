@@ -95,6 +95,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--data-dir", default=str(DEFAULT_DATA_DIR), help="Local offline dataset for comparison.")
     parser.add_argument("--env-file", default=str(DEFAULT_ENV_FILE), help="Local env file containing BIGQUANT_API_KEY.")
     parser.add_argument("--output-dir", default="data/bigquant_probe", help="Output directory for probe CSV files.")
+    parser.add_argument("--adjust", default="qfq", choices=["raw", "qfq", "hfq"], help="Price adjustment exported by the adapter.")
+    parser.add_argument("--volume-unit", default="hand", choices=["hand", "share"], help="Volume unit exported by the adapter.")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return parser.parse_args()
 
@@ -114,7 +116,13 @@ def main() -> None:
 
     init_bigquant(Path(args.env_file))
     try:
-        bigquant_df = fetch_bigquant_daily_history_batch(symbols, start_date=start_date, end_date=end_date)
+        bigquant_df = fetch_bigquant_daily_history_batch(
+            symbols,
+            start_date=start_date,
+            end_date=end_date,
+            adjust=args.adjust,
+            volume_unit=args.volume_unit,
+        )
     except Exception as exc:  # noqa: BLE001
         message = str(exc)
         if "请先申请SDK使用权限" in message or "SDK使用权限" in message:

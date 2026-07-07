@@ -3,9 +3,11 @@
 
 This module is intentionally isolated from the current production Tencent/Sina
 pipeline. It converts BigQuant DAI output into the existing local runtime schema
-used by the project:
+used by the project.
 
-    trade_date, open, high, low, close, volume, amount, turnover_rate
+BigQuant ``cn_stock_bar1d`` stores post-adjusted prices and share-based volume.
+The current project expects front-adjusted-ish prices and volume in hands, so
+the adapter defaults to ``adjust="qfq"`` and ``volume_unit="hand"``.
 """
 
 from __future__ import annotations
@@ -116,6 +118,8 @@ def _select_columns(datasource: str) -> tuple[list[str], dict[str, str | None]]:
     turnover_col = _first_available(fields, ["turnover_rate", "turnover", "turn"])
 
     columns = required.copy()
+    if "adjust_factor" in fields:
+        columns.append("adjust_factor")
     if amount_col:
         columns.append(amount_col)
     if turnover_col and turnover_col not in columns:
@@ -123,7 +127,13 @@ def _select_columns(datasource: str) -> tuple[list[str], dict[str, str | None]]:
     return columns, {"amount": amount_col, "turnover_rate": turnover_col}
 
 
-def _standardize_daily_frame(df: pd.DataFrame, aliases: dict[str, str | None]) -> pd.DataFrame:
+def _standardize_daily_frame(
+    df: pd.DataFrame,
+    aliases: dict[str, str | None],
+    *,
+    adjust: str,
+    volume_unit: str,
+) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(
             columns=[
@@ -145,6 +155,38 @@ def _standardize_daily_frame(df: pd.DataFrame, aliases: dict[str, str | None]) -
     result["amount"] = result[aliases["amount"]] if aliases.get("amount") else pd.NA
     result["turnover_rate"] = result[aliases["turnover_rate"]] if aliases.get("turnover_rate") else pd.NA
 
+    price_cols = ["open", "high", "low", "close"]
+    for col in price_cols + ["volume", "amount", "turnover_rate"]:
+        result[col] = pd.to_numeric(result[col], errors="coerce")
+
+    if "adjust_factor" in result.columns:
+        result["adjust_factor"] = pd.to_numeric(result["adjust_factor"], errors="coerce")
+    elif adjust in {"raw", "qfq"}:
+        raise ValueError("BigQuant adjust_factor is required for raw/qfq conversion.")
+
+    if adjust == "raw":
+        for col in price_cols:
+            result[col] = result[col] / result["adjust_factor"]
+    elif adjust == "qfq":
+        latest_factor = (
+            result.sort_values(["symbol", "trade_date"])
+            .groupby("symbol")["adjust_factor"]
+            .transform("last")
+        )
+        for col in price_cols:
+            result[col] = result[col] / latest_factor
+    elif adjust == "hfq":
+        pass
+    else:
+        raise ValueError(f"Unsupported adjust: {adjust}")
+
+    if volume_unit == "hand":
+        result["volume"] = result["volume"] / 100.0
+    elif volume_unit == "share":
+        pass
+    else:
+        raise ValueError(f"Unsupported volume_unit: {volume_unit}")
+
     output_cols = [
         "trade_date",
         "symbol",
@@ -156,9 +198,6 @@ def _standardize_daily_frame(df: pd.DataFrame, aliases: dict[str, str | None]) -
         "amount",
         "turnover_rate",
     ]
-    for col in ["open", "high", "low", "close", "volume", "amount", "turnover_rate"]:
-        result[col] = pd.to_numeric(result[col], errors="coerce")
-
     return (
         result[output_cols]
         .dropna(subset=["trade_date", "symbol", "close"])
@@ -173,6 +212,8 @@ def fetch_bigquant_daily_history(
     end_date: str,
     *,
     datasource: str = DEFAULT_DATASOURCE,
+    adjust: str = "qfq",
+    volume_unit: str = "hand",
 ) -> pd.DataFrame:
     """Fetch one symbol's daily OHLCV data from BigQuant DAI."""
     return fetch_bigquant_daily_history_batch(
@@ -180,6 +221,8 @@ def fetch_bigquant_daily_history(
         start_date=start_date,
         end_date=end_date,
         datasource=datasource,
+        adjust=adjust,
+        volume_unit=volume_unit,
     )
 
 
@@ -189,13 +232,20 @@ def fetch_bigquant_daily_history_batch(
     end_date: str,
     *,
     datasource: str = DEFAULT_DATASOURCE,
+    adjust: str = "qfq",
+    volume_unit: str = "hand",
 ) -> pd.DataFrame:
     """Fetch multiple symbols' daily OHLCV data from BigQuant DAI."""
     from bigquant import dai
 
     instruments = [to_bigquant_instrument(symbol) for symbol in symbols]
     if not instruments:
-        return _standardize_daily_frame(pd.DataFrame(), {"amount": None, "turnover_rate": None})
+        return _standardize_daily_frame(
+            pd.DataFrame(),
+            {"amount": None, "turnover_rate": None},
+            adjust=adjust,
+            volume_unit=volume_unit,
+        )
 
     columns, aliases = _select_columns(datasource)
     instruments_sql = ", ".join(_quote_sql_string(item) for item in instruments)
@@ -215,4 +265,4 @@ def fetch_bigquant_daily_history_batch(
             "instrument": instruments,
         },
     ).df()
-    return _standardize_daily_frame(raw, aliases)
+    return _standardize_daily_frame(raw, aliases, adjust=adjust, volume_unit=volume_unit)
