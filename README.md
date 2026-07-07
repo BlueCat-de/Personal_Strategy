@@ -204,7 +204,7 @@ HOME="$(pwd)" conda run -n bigquant python bigquant_strategy.py \
   --start-date 2025-07-05 \
   --end-date 2026-07-06 \
   --prices-file data/offline/a_share_12m_bigquant/prices_long.csv \
-  --output-dir data/backtests/bigquant_strategy_v4/20260706
+  --output-dir data/backtests/bigquant_strategy_v4_fixed/20260706
 ```
 
 输出文件：
@@ -250,6 +250,7 @@ BigTrader 设置：
 
 - 初始资金默认 `100000`。
 - 使用 `context.order_target_percent` 调仓。
+- 事件日传入完整目标持仓快照；非调仓日传入 `instrument=None` 哨兵行，避免 BigTrader 把空信号误解释为空仓目标。
 - 买卖成交价使用下一根日线 `open`。
 - `context.set_stock_t1(1)` 开启 T+1。
 - `PerOrder(buy_cost=0.0003, sell_cost=0.0013, min_cost=5.0)` 近似 A 股手续费和印花税。
@@ -261,16 +262,16 @@ BigTrader 设置：
 ```text
 strategy=small_account_high_conviction_policy_v4_bigquant
 universe_count=3,045
-signal_rows=42
+signal_rows=270
 traded_instruments=17
-return_ratio=2.93
-annual_return_ratio=3.06
+return_ratio=21.15
+annual_return_ratio=22.12
 benchmark_ratio=22.11
-max_drawdown=1.16
-win_ratio=47.83
+max_drawdown=6.90
+win_ratio=54.55
 ```
 
-该结果使用 BigQuant 数据和 BigTrader 撮合，已经不再沿用旧本地 runtime 的收益口径。与旧 v4 回测结果不同是正常的，主要来自回测引擎、订单执行、分红处理、股票池和信号权重执行细节差异。
+该结果使用 BigQuant 数据和 BigTrader 撮合，已经不再沿用旧本地 runtime 的收益口径。修复 BigTrader 非调仓日持仓延续后，结果已接近旧 runtime 在同一 BigQuant 数据上的回测结果。
 
 ## 注意事项
 

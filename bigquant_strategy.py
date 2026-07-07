@@ -279,6 +279,16 @@ def allocate_two_names(selected: list[str], vol20: pd.Series, gross: float, max_
     return weights
 
 
+def append_target_snapshot(rows: list[dict], date: str, previous: pd.Series, current: pd.Series) -> None:
+    """Append a full BigTrader target snapshot for an event date."""
+    active_symbols = set(previous[previous > 0].index) | set(current[current > 0].index)
+    if not active_symbols:
+        rows.append({"date": date, "instrument": None, "weight": 0.0})
+        return
+    for symbol in sorted(active_symbols):
+        rows.append({"date": date, "instrument": to_bigquant_instrument(symbol), "weight": float(current.get(symbol, 0.0))})
+
+
 def build_weight_signals(bars: pd.DataFrame, config: StrategyConfig) -> pd.DataFrame:
     if bars.empty:
         return pd.DataFrame(columns=["date", "instrument", "weight"])
@@ -291,6 +301,7 @@ def build_weight_signals(bars: pd.DataFrame, config: StrategyConfig) -> pd.DataF
     weekly_dates = set(first_trading_day_each_week(pd.to_datetime(close.index)))
     formal_start = pd.to_datetime(config.start_date)
     rows: list[dict] = []
+    event_dates: set[str] = set()
     current = pd.Series(0.0, index=close.columns)
     entry_price: dict[str, float] = {}
     peak_price: dict[str, float] = {}
@@ -364,11 +375,9 @@ def build_weight_signals(bars: pd.DataFrame, config: StrategyConfig) -> pd.DataF
                 current = pd.Series(0.0, index=close.columns)
                 entry_price = {}
                 peak_price = {}
-            for symbol in sorted(set(previous[previous > 0].index) | set(current[current > 0].index)):
-                old_weight = float(previous.get(symbol, 0.0))
-                new_weight = float(current.get(symbol, 0.0))
-                if abs(old_weight - new_weight) > 1e-8:
-                    rows.append({"date": dt_iso, "instrument": to_bigquant_instrument(symbol), "weight": new_weight})
+            if not current.equals(previous):
+                append_target_snapshot(rows, dt_iso, previous, current)
+                event_dates.add(dt_iso)
 
         if loc >= max(1, config.trend_exit_window):
             last = close.iloc[loc]
@@ -393,7 +402,14 @@ def build_weight_signals(bars: pd.DataFrame, config: StrategyConfig) -> pd.DataF
                     peak_price.pop(symbol, None)
             for symbol in sorted(previous[previous > 0].index):
                 if previous.loc[symbol] > 0 and current.loc[symbol] == 0.0:
-                    rows.append({"date": dt_iso, "instrument": to_bigquant_instrument(symbol), "weight": 0.0})
+                    append_target_snapshot(rows, dt_iso, previous, current)
+                    event_dates.add(dt_iso)
+                    break
+
+    formal_dates = pd.to_datetime(close.index[pd.to_datetime(close.index) >= formal_start]).strftime("%Y-%m-%d")
+    for dt_iso in formal_dates:
+        if dt_iso not in event_dates:
+            rows.append({"date": dt_iso, "instrument": None, "weight": 0.0})
 
     signals = pd.DataFrame(rows, columns=["date", "instrument", "weight"])
     if signals.empty:
