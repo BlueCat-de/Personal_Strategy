@@ -72,8 +72,12 @@ def load_webhooks(path: Path) -> list[str]:
     if not path.exists():
         return []
     text = path.read_text(encoding="utf-8")
-    urls = re.findall(r"https://open\.feishu\.cn/open-apis/bot/v2/hook/[A-Za-z0-9_-]+", text)
+    urls = re.findall(r"https://open\.(?:feishu\.cn|larkoffice\.com)/open-apis/bot/v2/hook/[A-Za-z0-9_-]+", text)
     return sorted(set(urls))
+
+
+def webhook_domain(url: str) -> str:
+    return url.split("/")[2] if "/" in url else "unknown"
 
 
 def send_feishu(webhook_file: Path, content: str) -> None:
@@ -86,9 +90,19 @@ def send_feishu(webhook_file: Path, content: str) -> None:
         request = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
         try:
             with urllib.request.urlopen(request, timeout=10) as response:
-                response.read()
+                body = response.read().decode("utf-8", "replace")
+                try:
+                    result = json.loads(body)
+                except json.JSONDecodeError:
+                    result = {"raw": body}
+                code = result.get("code", result.get("StatusCode"))
+                msg = result.get("msg", result.get("StatusMessage", ""))
+                if code not in {0, "0"}:
+                    print(f"{now_text()} ERROR Feishu push rejected domain={webhook_domain(url)} code={code} msg={msg}", flush=True)
+                else:
+                    print(f"{now_text()} INFO Feishu push ok domain={webhook_domain(url)}", flush=True)
         except Exception as exc:
-            print(f"{now_text()} ERROR Feishu push failed: {type(exc).__name__}: {exc}", flush=True)
+            print(f"{now_text()} ERROR Feishu push failed domain={webhook_domain(url)}: {type(exc).__name__}: {exc}", flush=True)
 
 
 def pid_is_running(pid: int) -> bool:
