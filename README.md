@@ -204,7 +204,7 @@ HOME="$(pwd)" conda run -n bigquant python bigquant_strategy.py \
   --start-date 2025-07-05 \
   --end-date 2026-07-06 \
   --prices-file data/offline/a_share_12m_bigquant/prices_long.csv \
-  --output-dir data/backtests/bigquant_strategy/20260706
+  --output-dir data/backtests/bigquant_strategy_v4/20260706
 ```
 
 输出文件：
@@ -218,7 +218,7 @@ universe.csv                 # 本次股票池
 
 ## 当前策略逻辑
 
-策略定位：小资金 A 股主板账户，最多持仓 2 只，周频调仓，日频风控退出。
+策略定位：`small_account_high_conviction_policy v4` 的 BigQuant/BigTrader 迁移版。它面向小资金 A 股主板账户，最多持仓 2 只，周频调仓，日频风控退出。
 
 股票池过滤：
 
@@ -236,16 +236,15 @@ universe.csv                 # 本次股票池
 
 选股评分：
 
-- 20 日动量；
-- 60 日动量；
-- 20 日低波动；
-- 剔除高波动、20 日明显下跌、低流动性标的。
+- 候选股票必须同时满足价格、MA20/MA60/MA120 趋势、20/60/120 日动量、不过热、低波动、60 日回撤、信号日跳空和流动性过滤。
+- 评分因子包括 20/60/120 日动量、相对 MA60 趋势强度、低波动、下行波动、60 日回撤修复和成交活跃度。
+- 最终最多选 2 只，按 20 日波动率倒数分配权重，单票上限 34%。
 
 风控退出：
 
-- 跌破 MA20；
-- 20 日收益低于 -6%；
-- 波动率进入高分位。
+- 跌破 `trend_exit_window`，默认 MA20；
+- 相对信号入场价亏损超过 6%；
+- 相对持仓后高点回撤超过 10%。
 
 BigTrader 设置：
 
@@ -257,32 +256,21 @@ BigTrader 设置：
 
 ## 已验证结果
 
-使用 500 只股票 smoke test：
-
-```text
-signal_rows=114
-traded_instruments=46
-return_ratio=5.23
-annual_return_ratio=5.46
-max_drawdown=11.94
-win_ratio=53.45
-```
-
-这只是 BigQuant-only 新链路的连通性验证，不等同于最终生产策略成绩。
-
 完整股票池 BigTrader 回测：
 
 ```text
-signal_rows=119
-traded_instruments=51
-return_ratio=-13.10
-annual_return_ratio=-13.60
+strategy=small_account_high_conviction_policy_v4_bigquant
+universe_count=3,045
+signal_rows=42
+traded_instruments=17
+return_ratio=2.93
+annual_return_ratio=3.06
 benchmark_ratio=22.11
-max_drawdown=17.88
-win_ratio=45.00
+max_drawdown=1.16
+win_ratio=47.83
 ```
 
-该结果说明新 BigQuant-only 链路已经打通，但策略本身需要重新优化。旧本地 runtime 的历史收益不再作为本分支基准。
+该结果使用 BigQuant 数据和 BigTrader 撮合，已经不再沿用旧本地 runtime 的收益口径。与旧 v4 回测结果不同是正常的，主要来自回测引擎、订单执行、分红处理、股票池和信号权重执行细节差异。
 
 ## 注意事项
 
