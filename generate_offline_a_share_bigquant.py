@@ -23,6 +23,7 @@ import pandas as pd
 
 from bigquant_provider import (
     DEFAULT_DATASOURCE,
+    dai_query,
     fetch_bigquant_daily_history_batch,
     from_bigquant_instrument,
     init_bigquant,
@@ -63,6 +64,7 @@ class BigQuantOfflineConfig:
     exclude_st: bool
     write_combined: bool
     overwrite: bool
+    resume: bool = False
 
 
 def setup_logging(level: str) -> None:
@@ -152,8 +154,6 @@ def runtime_from_bigquant(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def load_bigquant_universe(config: BigQuantOfflineConfig) -> pd.DataFrame:
-    from bigquant import dai
-
     end_date = iso_date(config.test_end_date)
     sql = f"""
         SELECT instrument, name
@@ -161,7 +161,7 @@ def load_bigquant_universe(config: BigQuantOfflineConfig) -> pd.DataFrame:
         WHERE date = '{end_date}'
         ORDER BY instrument
     """
-    raw = dai.query(sql, filters={"date": [end_date, end_date]}).df()
+    raw = dai_query(sql, filters={"date": [end_date, end_date]}, env_file=config.env_file).df()
     if raw.empty:
         raise ValueError(f"BigQuant universe query returned no rows for {end_date}")
 
@@ -221,6 +221,34 @@ def save_symbol_frames(runtime_df: pd.DataFrame, output_dir: Path, overwrite: bo
             }
         )
     return records
+
+
+def load_cached_symbol_frame(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        return pd.DataFrame(columns=RUNTIME_COLUMNS)
+    frame = pd.read_csv(path, dtype={"symbol": str})
+    for col in RUNTIME_COLUMNS:
+        if col not in frame.columns:
+            frame[col] = pd.NA
+    frame["symbol"] = frame["symbol"].map(normalize_symbol)
+    return frame[RUNTIME_COLUMNS].sort_values(["date", "symbol"]).reset_index(drop=True)
+
+
+def cached_symbol_is_complete(path: Path, symbol: str, config: BigQuantOfflineConfig) -> bool:
+    frame = load_cached_symbol_frame(path)
+    if frame.empty:
+        return False
+    if normalize_symbol(symbol) not in set(frame["symbol"].astype(str).map(normalize_symbol)):
+        return False
+    start = pd.to_datetime(frame["date"], errors="coerce").min()
+    end = pd.to_datetime(frame["date"], errors="coerce").max()
+    requested_start = pd.to_datetime(config.fetch_start_date)
+    requested_end = pd.to_datetime(config.test_end_date)
+    # The requested start can be a weekend or holiday; the first actual trading
+    # day is allowed to appear shortly after it.
+    start_ok = start <= requested_start + pd.Timedelta(days=10)
+    end_ok = end >= requested_end
+    return bool(start_ok and end_ok)
 
 
 def write_manifest(config: BigQuantOfflineConfig, universe: pd.DataFrame, symbol_records: list[dict]) -> None:
@@ -294,7 +322,35 @@ def generate_offline_dataset(config: BigQuantOfflineConfig) -> None:
     frames: list[pd.DataFrame] = []
     symbol_records: list[dict] = []
     fetched_symbols: set[str] = set()
+    cached_symbols: set[str] = set()
+    if config.resume:
+        symbol_dir = config.output_dir / "symbols"
+        for symbol in symbols:
+            path = symbol_dir / f"{normalize_symbol(symbol)}.csv"
+            if cached_symbol_is_complete(path, symbol, config):
+                cached = load_cached_symbol_frame(path)
+                frames.append(cached)
+                cached_symbols.add(normalize_symbol(symbol))
+                fetched_symbols.add(normalize_symbol(symbol))
+                symbol_records.append(
+                    {
+                        "symbol": normalize_symbol(symbol),
+                        "rows": len(cached),
+                        "start_date": str(cached["date"].min()),
+                        "end_date": str(cached["date"].max()),
+                        "status": "cached",
+                        "path": str(path),
+                    }
+                )
+        if cached_symbols:
+            LOGGER.info("Resume enabled: reuse cached complete symbols=%s", len(cached_symbols))
+
+    symbols_to_fetch = [symbol for symbol in symbols if normalize_symbol(symbol) not in cached_symbols]
+    symbols_to_fetch_set = set(map(normalize_symbol, symbols_to_fetch))
     for index, batch in enumerate(chunked(symbols, config.batch_size), start=1):
+        batch = [symbol for symbol in batch if normalize_symbol(symbol) in symbols_to_fetch_set]
+        if not batch:
+            continue
         LOGGER.info("Fetch batch %s: symbols=%s", index, len(batch))
         raw = fetch_bigquant_daily_history_batch(
             batch,
@@ -337,6 +393,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate offline A-share data from BigQuant SDK.")
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR), help="Output offline dataset directory.")
     parser.add_argument("--end-date", help="Dataset end date, default today. Accepts YYYY-MM-DD or YYYYMMDD.")
+    parser.add_argument("--start-date", help="Dataset fetch start date. Overrides --months/--warmup-days when set.")
     parser.add_argument("--months", type=int, default=12, help="Test window length in months.")
     parser.add_argument("--warmup-days", type=int, default=180, help="Extra warm-up days before the test window.")
     parser.add_argument("--env-file", default=str(DEFAULT_ENV_FILE), help="Local env file containing BIGQUANT_API_KEY.")
@@ -350,6 +407,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--include-st", action="store_true", help="Include ST/*ST stocks.")
     parser.add_argument("--no-combined", action="store_true", help="Do not write prices_long.csv.")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing symbol CSV files.")
+    parser.add_argument("--resume", action="store_true", help="Reuse complete existing symbol CSV files in the output directory.")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return parser.parse_args()
 
@@ -358,6 +416,9 @@ def main() -> None:
     args = parse_args()
     setup_logging(args.log_level)
     test_start, test_end, fetch_start = compute_date_window(args.end_date, args.months, args.warmup_days)
+    if args.start_date:
+        fetch_start = yyyymmdd(pd.Timestamp(args.start_date))
+        test_start = fetch_start
     config = BigQuantOfflineConfig(
         output_dir=Path(args.output_dir),
         test_start_date=test_start,
@@ -374,6 +435,7 @@ def main() -> None:
         exclude_st=not args.include_st,
         write_combined=not args.no_combined,
         overwrite=args.overwrite,
+        resume=args.resume,
     )
     generate_offline_dataset(config)
 

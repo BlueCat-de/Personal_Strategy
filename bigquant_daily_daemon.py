@@ -229,8 +229,15 @@ def due(time_text: str) -> bool:
 
 def should_run_data_update(state: dict, today: str) -> bool:
     retry_after = float(state.get("next_data_retry_after", 0.0) or 0.0)
+    if (
+        state.get("data_last_result_date") == today
+        and state.get("data_last_status") == "skipped"
+        and state.get("latest_bigquant_data_date") != today
+        and time.time() >= retry_after
+    ):
+        return True
     return state.get("data_last_result_date") != today or (
-        state.get("data_last_status") == "failed" and time.time() >= retry_after
+        state.get("data_last_status") in {"failed", "upstream_not_ready"} and time.time() >= retry_after
     )
 
 
@@ -270,10 +277,28 @@ def run_data_update(args: argparse.Namespace, state: dict) -> dict:
     summary = load_json(summary_path, {})
     latest = summary.get("latest_local_date") or summary.get("latest_bigquant_date") or read_data_latest(Path(args.data_dir))
     if code == 0 and summary.get("status") in {"updated", "skipped"}:
-        state["data_last_result_date"] = today
-        state["data_last_status"] = summary.get("status")
+        latest_bigquant_date = summary.get("latest_bigquant_date")
+        upstream_not_ready = summary.get("status") == "skipped" and latest_bigquant_date and latest_bigquant_date < today
         state["data_finished_at"] = now_text()
         state["latest_bigquant_data_date"] = latest
+        if upstream_not_ready:
+            state["data_last_status"] = "upstream_not_ready"
+            state["next_data_retry_after"] = time.time() + args.retry_seconds
+            save_json(Path(args.state_file), state)
+            message = (
+                "BigQuant 数据每日取数：等待上游更新\n"
+                f"运行时间：{now_text()}\n"
+                f"请求日期：{today}\n"
+                f"BigQuant 最新交易日：{latest_bigquant_date}\n"
+                f"本地数据截止：{latest}\n"
+                f"下次重试：约 {args.retry_seconds // 60} 分钟后\n"
+                "说明：BigQuant 日频数据通常在每日 20:00-21:00 完成更新；当前上游尚未更新到今日，暂不运行策略。"
+            )
+            send_feishu(Path(args.webhook_file), message)
+            return summary
+
+        state["data_last_result_date"] = today
+        state["data_last_status"] = summary.get("status")
         state.pop("next_data_retry_after", None)
         save_json(Path(args.state_file), state)
         message = (
@@ -291,10 +316,27 @@ def run_data_update(args: argparse.Namespace, state: dict) -> dict:
 
     state["data_last_status"] = "failed"
     retry_at = time.time() + args.retry_seconds
+    quota_exhausted = "数据配额不足" in output or "quota" in output.lower()
+    if quota_exhausted:
+        state["data_last_status"] = "quota_exhausted"
+        state["data_last_result_date"] = today
+        retry_at = 0.0
     state["next_data_retry_after"] = retry_at
     state["data_finished_at"] = now_text()
     save_json(Path(args.state_file), state)
     tail = "\n".join(output.splitlines()[-20:])
+    if quota_exhausted:
+        message = (
+            "BigQuant 数据每日取数：配额不足\n"
+            f"运行时间：{now_text()}\n"
+            f"请求日期：{today}\n"
+            f"退出码：{code}\n"
+            "说明：BigQuant 本周 cell 配额不足，今日不再自动重试，避免重复消耗和刷屏；待配额刷新后会在下个调度日继续执行。\n"
+            f"日志：{log_path}\n"
+            f"错误摘要：\n{tail[-1500:]}"
+        )
+        send_feishu(Path(args.webhook_file), message)
+        return {"status": "quota_exhausted", "latest_local_date": latest}
     message = (
         "BigQuant 数据每日取数：失败\n"
         f"运行时间：{now_text()}\n"
@@ -457,8 +499,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Schedule BigQuant daily data update and strategy runs.")
     parser.add_argument("--conda", default=str(DEFAULT_CONDA))
     parser.add_argument("--conda-env", default="bigquant")
-    parser.add_argument("--data-time", default="16:30")
-    parser.add_argument("--strategy-time", default="16:50")
+    parser.add_argument("--data-time", default="21:10")
+    parser.add_argument("--strategy-time", default="21:30")
     parser.add_argument("--interval-seconds", type=int, default=300)
     parser.add_argument("--retry-seconds", type=int, default=1800)
     parser.add_argument("--batch-size", type=int, default=100)

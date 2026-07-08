@@ -24,6 +24,7 @@ import numpy as np
 
 from bigquant_provider import (
     DEFAULT_DATASOURCE,
+    dai_query,
     fetch_bigquant_daily_history_batch,
     from_bigquant_instrument,
     init_bigquant,
@@ -145,8 +146,6 @@ def is_bse(symbol: str) -> bool:
 
 
 def load_universe(config: StrategyConfig) -> pd.DataFrame:
-    from bigquant import dai
-
     end_date = iso_date(config.end_date)
     sql = f"""
         SELECT instrument, name
@@ -154,7 +153,7 @@ def load_universe(config: StrategyConfig) -> pd.DataFrame:
         WHERE date = '{end_date}'
         ORDER BY instrument
     """
-    raw = dai.query(sql, filters={"date": [end_date, end_date]}).df()
+    raw = dai_query(sql, filters={"date": [end_date, end_date]}, env_file=config.env_file).df()
     if raw.empty:
         raise ValueError(f"No BigQuant universe rows on {end_date}")
 
@@ -270,6 +269,43 @@ def high_conviction_market_exposure(close: pd.DataFrame, loc: int, config: Strat
     return config.strong_total_weight
 
 
+def regime_adaptive_market_exposure(close: pd.DataFrame, loc: int, config: StrategyConfig) -> float:
+    """Classify market regime instead of forecasting the next price point."""
+    if loc < 120:
+        return 0.0
+    history = close.iloc[: loc + 1]
+    last = history.iloc[-1]
+    ma20 = history.rolling(20).mean().iloc[-1]
+    ma60 = history.rolling(60).mean().iloc[-1]
+    ma120 = history.rolling(120).mean().iloc[-1]
+    breadth20 = float((last > ma20).mean())
+    breadth60 = float((last > ma60).mean())
+    breadth120 = float((last > ma120).mean())
+    median_ret10 = float((last / history.iloc[-11] - 1).median())
+    median_ret20 = float((last / history.iloc[-21] - 1).median())
+    median_ret60 = float((last / history.iloc[-61] - 1).median())
+    returns = close.pct_change(fill_method=None)
+    market_vol20 = float(returns.iloc[max(0, loc - 20) : loc + 1].std().median())
+    recent = history.iloc[max(0, loc - 20) : loc + 1]
+    weak_drawdown_ratio = float(((recent.iloc[-1] / recent.cummax().iloc[-1] - 1) < -0.08).mean())
+
+    if (
+        breadth20 < 0.56
+        or breadth60 < 0.52
+        or breadth120 < 0.48
+        or median_ret20 < -0.02
+        or median_ret60 < -0.05
+        or market_vol20 > 0.020
+        or weak_drawdown_ratio > 0.16
+    ):
+        return 0.0
+    if breadth20 >= 0.62 and breadth60 >= 0.58 and median_ret20 > 0.015 and median_ret60 > 0.0 and market_vol20 < 0.017:
+        return min(config.strong_total_weight, 0.68)
+    if breadth20 >= 0.58 and breadth60 >= 0.54 and median_ret10 > -0.005:
+        return min(config.neutral_total_weight, 0.34)
+    return 0.0
+
+
 def allocate_two_names(selected: list[str], vol20: pd.Series, gross: float, max_position_weight: float) -> pd.Series:
     weights = pd.Series(0.0, index=vol20.index)
     if not selected or gross <= 0:
@@ -317,7 +353,12 @@ def build_weight_signals(bars: pd.DataFrame, config: StrategyConfig) -> pd.DataF
     legacy_traded_value = (open_ * volume).replace([np.inf, -np.inf], np.nan)
     fallback_amount = open_ * volume * 100.0
     actual_traded_value = amount.where(amount.notna() & (amount > 0), fallback_amount).replace([np.inf, -np.inf], np.nan)
-    uses_bigquant_amount = config.strategy_version in {"v4_volume_enhanced", "v4_volume_light", "v4_volume_risk_filter"}
+    uses_bigquant_amount = config.strategy_version in {
+        "v4_volume_enhanced",
+        "v4_volume_light",
+        "v4_volume_risk_filter",
+        "v5_regime_adaptive",
+    }
     traded_value = actual_traded_value if uses_bigquant_amount else legacy_traded_value
     returns = close.pct_change(fill_method=None)
     weekly_dates = set(first_trading_day_each_week(pd.to_datetime(close.index)))
@@ -346,6 +387,8 @@ def build_weight_signals(bars: pd.DataFrame, config: StrategyConfig) -> pd.DataF
             ma120 = history.rolling(120).mean().iloc[-1]
             vol20 = returns.iloc[max(0, loc - 20) : loc + 1].std()
             downside60 = returns.iloc[max(0, loc - 60) : loc + 1].clip(upper=0).std()
+            positive_ratio20 = (returns.iloc[max(0, loc - 20) : loc + 1] > 0).mean()
+            positive_ratio60 = (returns.iloc[max(0, loc - 60) : loc + 1] > 0).mean()
             trailing60 = history.iloc[max(0, loc - 60) : loc + 1]
             drawdown60 = trailing60.iloc[-1] / trailing60.cummax().iloc[-1] - 1
             avg_value20 = traded_value.iloc[max(0, loc - 20) : loc + 1].mean()
@@ -398,6 +441,34 @@ def build_weight_signals(bars: pd.DataFrame, config: StrategyConfig) -> pd.DataF
                     & amount_trend60.notna()
                 )
                 tradable = tradable & volume_risk_guard
+            elif config.strategy_version == "v5_regime_adaptive":
+                smooth_trend = (
+                    (positive_ratio20 >= 0.48)
+                    & (positive_ratio60 >= 0.45)
+                    & (last > ma20)
+                    & (ma20 > ma60)
+                    & (ma60 > ma120)
+                )
+                liquidity_quality = (
+                    (avg_value20 >= config.min_amount20)
+                    & (avg_turnover20 <= min(config.max_turnover20, 0.16))
+                    & (volume_ratio20 <= min(config.max_volume_ratio20, 2.8))
+                    & (amount_trend60 >= max(config.min_amount_trend60, -0.12))
+                    & avg_turnover20.notna()
+                    & volume_ratio20.notna()
+                    & amount_trend60.notna()
+                )
+                tradable = (
+                    tradable
+                    & smooth_trend
+                    & liquidity_quality
+                    & (mom60 > max(config.min_mom60, 0.02))
+                    & (mom120 > 0.0)
+                    & (mom20 < min(config.max_mom20, 0.35))
+                    & (mom5 < min(config.max_mom5, 0.25))
+                    & (vol20 < min(config.max_vol20, 0.048))
+                    & (drawdown60 > -min(config.max_drawdown60, 0.18))
+                )
 
             if config.strategy_version == "v4_volume_enhanced":
                 score = (
@@ -427,6 +498,21 @@ def build_weight_signals(bars: pd.DataFrame, config: StrategyConfig) -> pd.DataF
                     + 0.02 * pct_rank(amount_trend60)
                     + 0.01 * pct_rank(turnover_balance)
                 )
+            elif config.strategy_version == "v5_regime_adaptive":
+                turnover_balance = -((avg_turnover20 - 0.030).abs())
+                score = (
+                    0.20 * pct_rank(mom60)
+                    + 0.16 * pct_rank(mom120)
+                    + 0.10 * pct_rank(mom20)
+                    + 0.14 * pct_rank(last / ma60 - 1)
+                    + 0.12 * pct_rank(vol20, ascending=False)
+                    + 0.08 * pct_rank(downside60, ascending=False)
+                    + 0.06 * pct_rank(drawdown60)
+                    + 0.05 * pct_rank(positive_ratio60)
+                    + 0.04 * pct_rank(amount_trend60)
+                    + 0.03 * pct_rank(avg_value20)
+                    + 0.02 * pct_rank(turnover_balance)
+                )
             else:
                 score = (
                     0.24 * pct_rank(mom60)
@@ -442,7 +528,10 @@ def build_weight_signals(bars: pd.DataFrame, config: StrategyConfig) -> pd.DataF
             ranked = score.dropna().sort_values(ascending=False)
             selected = ranked.head(config.max_positions).index.tolist()
 
-            gross = high_conviction_market_exposure(close, loc, config)
+            if config.strategy_version == "v5_regime_adaptive":
+                gross = regime_adaptive_market_exposure(close, loc, config)
+            else:
+                gross = high_conviction_market_exposure(close, loc, config)
             if len(ranked) < config.min_candidates:
                 gross = 0.0
 
@@ -589,7 +678,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stop-loss", type=float, default=0.06)
     parser.add_argument("--trailing-stop", type=float, default=0.10)
     parser.add_argument("--trend-exit-window", type=int, default=20)
-    parser.add_argument("--strategy-version", choices=["v4", "v4_volume_enhanced", "v4_volume_light", "v4_volume_risk_filter"], default="v4")
+    parser.add_argument(
+        "--strategy-version",
+        choices=["v4", "v4_volume_enhanced", "v4_volume_light", "v4_volume_risk_filter", "v5_regime_adaptive"],
+        default="v4",
+    )
     parser.add_argument("--min-amount20", type=float, default=30_000_000.0, help="Minimum 20-day average turnover amount for volume-enhanced selection.")
     parser.add_argument("--min-turnover20", type=float, default=0.005, help="Minimum 20-day average turnover rate in decimal form.")
     parser.add_argument("--max-turnover20", type=float, default=0.18, help="Maximum 20-day average turnover rate in decimal form.")

@@ -23,6 +23,8 @@ import pandas as pd
 LOGGER = logging.getLogger("bigquant_provider")
 DEFAULT_ENV_FILE = Path(__file__).resolve().parent / ".env.local"
 DEFAULT_DATASOURCE = "cn_stock_bar1d"
+_ACTIVE_KEY_INDEX = 0
+_ACTIVE_ENV_FILE = DEFAULT_ENV_FILE
 
 
 def normalize_symbol(symbol: str) -> str:
@@ -64,21 +66,123 @@ def load_env_file(path: Path = DEFAULT_ENV_FILE) -> dict[str, str]:
     return values
 
 
-def init_bigquant(env_file: Path = DEFAULT_ENV_FILE) -> None:
-    """Initialize BigQuant SDK from BIGQUANT_API_KEY or ~/.bigquant config."""
+def _api_keys(env_file: Path = DEFAULT_ENV_FILE) -> list[str]:
+    env_values = load_env_file(env_file)
+    keys: list[str] = []
+    for name in ["BIGQUANT_API_KEY", "BIGQUANT_API_KEY2"]:
+        value = os.environ.get(name) or env_values.get(name)
+        if value and value not in keys:
+            keys.append(value)
+    return keys
+
+
+def _is_quota_error(error: BaseException) -> bool:
+    text = str(error).lower()
+    return "数据配额不足" in str(error) or "quota" in text or "配额不足" in str(error)
+
+
+def _activate_bigquant_key(api_key: str, index: int) -> None:
     import bigquant
 
-    env_values = load_env_file(env_file)
-    api_key = os.environ.get("BIGQUANT_API_KEY") or env_values.get("BIGQUANT_API_KEY")
-    if api_key:
-        if "." in api_key:
-            ak, sk = api_key.split(".", 1)
-            bigquant.init(ak=ak, sk=sk)
-        else:
-            bigquant.init_from_token(api_key)
+    if "." in api_key:
+        ak, sk = api_key.split(".", 1)
+        bigquant.init(ak=ak, sk=sk)
+    else:
+        bigquant.init_from_token(api_key)
+    LOGGER.info("Initialized BigQuant with API key slot %s", index + 1)
+
+
+def init_bigquant(env_file: Path = DEFAULT_ENV_FILE) -> None:
+    """Initialize BigQuant SDK from BIGQUANT_API_KEY* or ~/.bigquant config."""
+    global _ACTIVE_KEY_INDEX, _ACTIVE_ENV_FILE
+
+    _ACTIVE_ENV_FILE = env_file
+    _ACTIVE_KEY_INDEX = 0
+    keys = _api_keys(env_file)
+    if keys:
+        _activate_bigquant_key(keys[_ACTIVE_KEY_INDEX], _ACTIVE_KEY_INDEX)
         return
 
+    import bigquant
+
     bigquant.init_from_config()
+
+
+def dai_query(sql: str, filters: dict | None = None, env_file: Path | None = None):
+    """Run a BigQuant DAI query, switching to backup API keys on quota errors."""
+    from bigquant import dai
+
+    global _ACTIVE_KEY_INDEX
+
+    env_path = env_file or _ACTIVE_ENV_FILE
+    keys = _api_keys(env_path)
+    if keys and _ACTIVE_KEY_INDEX >= len(keys):
+        _ACTIVE_KEY_INDEX = 0
+
+    last_error: BaseException | None = None
+    attempts = len(keys) if keys else 1
+    for attempt in range(attempts):
+        if keys:
+            key_index = (_ACTIVE_KEY_INDEX + attempt) % len(keys)
+            if key_index != _ACTIVE_KEY_INDEX:
+                _activate_bigquant_key(keys[key_index], key_index)
+            try:
+                result = dai.query(sql, filters=filters)
+                _ACTIVE_KEY_INDEX = key_index
+                return result
+            except Exception as error:
+                last_error = error
+                if _is_quota_error(error) and attempt < attempts - 1:
+                    LOGGER.warning("BigQuant API key slot %s quota exhausted; trying next slot.", key_index + 1)
+                    continue
+                raise
+
+        try:
+            return dai.query(sql, filters=filters)
+        except Exception as error:
+            last_error = error
+            raise
+
+    if last_error:
+        raise last_error
+    raise RuntimeError("BigQuant DAI query failed without an exception.")
+
+
+def get_datasource_schema(datasource: str, env_file: Path | None = None) -> dict:
+    """Get datasource schema with the same API-key fallback semantics."""
+    from bigquant import dai
+
+    global _ACTIVE_KEY_INDEX
+
+    env_path = env_file or _ACTIVE_ENV_FILE
+    keys = _api_keys(env_path)
+    last_error: BaseException | None = None
+    attempts = len(keys) if keys else 1
+    for attempt in range(attempts):
+        if keys:
+            key_index = (_ACTIVE_KEY_INDEX + attempt) % len(keys)
+            if key_index != _ACTIVE_KEY_INDEX:
+                _activate_bigquant_key(keys[key_index], key_index)
+            try:
+                schema = dai.get_datasource_schema(datasource)
+                _ACTIVE_KEY_INDEX = key_index
+                return schema
+            except Exception as error:
+                last_error = error
+                if _is_quota_error(error) and attempt < attempts - 1:
+                    LOGGER.warning("BigQuant API key slot %s quota exhausted during schema lookup; trying next slot.", key_index + 1)
+                    continue
+                raise
+
+        try:
+            return dai.get_datasource_schema(datasource)
+        except Exception as error:
+            last_error = error
+            raise
+
+    if last_error:
+        raise last_error
+    raise RuntimeError("BigQuant schema lookup failed without an exception.")
 
 
 def _quote_sql_string(value: str) -> str:
@@ -88,9 +192,7 @@ def _quote_sql_string(value: str) -> str:
 @lru_cache(maxsize=16)
 def get_datasource_fields(datasource: str = DEFAULT_DATASOURCE) -> set[str]:
     """Return available field names for a BigQuant datasource."""
-    from bigquant import dai
-
-    schema = dai.get_datasource_schema(datasource)
+    schema = get_datasource_schema(datasource)
     fields = schema.get("fields", [])
     result: set[str] = set()
     for field in fields:
@@ -235,8 +337,6 @@ def fetch_bigquant_daily_history_batch(
     volume_unit: str = "hand",
 ) -> pd.DataFrame:
     """Fetch multiple symbols' daily OHLCV data from BigQuant DAI."""
-    from bigquant import dai
-
     instruments = [to_bigquant_instrument(symbol) for symbol in symbols]
     if not instruments:
         return _standardize_daily_frame(
@@ -257,7 +357,7 @@ def fetch_bigquant_daily_history_batch(
         ORDER BY date, instrument
     """
     LOGGER.info("Query BigQuant %s for %s instruments from %s to %s", datasource, len(instruments), start_date, end_date)
-    raw = dai.query(
+    raw = dai_query(
         sql,
         filters={
             "date": [start_date, end_date],

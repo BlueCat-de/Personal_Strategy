@@ -14,6 +14,7 @@ import pandas as pd
 
 from bigquant_provider import (
     DEFAULT_DATASOURCE,
+    dai_query,
     fetch_bigquant_daily_history_batch,
     init_bigquant,
     normalize_symbol,
@@ -71,9 +72,14 @@ def latest_local_date(prices_file: Path) -> str | None:
     return iso_date(str(dates.max()))
 
 
-def resolve_latest_bigquant_date(config: DailyUpdateConfig) -> str | None:
-    from bigquant import dai
+def missing_fetch_start(local_latest: str | None, latest_bigquant: str) -> str:
+    if not local_latest:
+        return latest_bigquant
+    start = pd.to_datetime(local_latest) + pd.Timedelta(days=1)
+    return iso_date(str(start))
 
+
+def resolve_latest_bigquant_date(config: DailyUpdateConfig) -> str | None:
     end = pd.to_datetime(config.end_date)
     start = end - pd.Timedelta(days=14)
     start_iso = start.strftime("%Y-%m-%d")
@@ -86,7 +92,7 @@ def resolve_latest_bigquant_date(config: DailyUpdateConfig) -> str | None:
         ORDER BY date DESC
         LIMIT 1
     """
-    raw = dai.query(sql, filters={"date": [start_iso, end_iso]}).df()
+    raw = dai_query(sql, filters={"date": [start_iso, end_iso]}, env_file=config.env_file).df()
     if raw.empty:
         return None
     return iso_date(str(raw["date"].max()))
@@ -171,6 +177,7 @@ def run_update(config: DailyUpdateConfig) -> dict:
         write_summary(output_dir, summary)
         return summary
 
+    backfill_start = missing_fetch_start(local_latest, latest_bigquant)
     test_start, test_end, fetch_start = compute_date_window(latest_bigquant, config.months, config.warmup_days)
     offline_config = BigQuantOfflineConfig(
         output_dir=output_dir,
@@ -188,6 +195,7 @@ def run_update(config: DailyUpdateConfig) -> dict:
         exclude_st=True,
         write_combined=True,
         overwrite=True,
+        resume=False,
     )
     universe = load_bigquant_universe(offline_config)
     atomic_write_csv(universe, output_dir / "universe.csv")
@@ -199,7 +207,7 @@ def run_update(config: DailyUpdateConfig) -> dict:
         LOGGER.info("Fetch BigQuant daily batch %s/%s size=%s", index // config.batch_size + 1, (len(symbols) + config.batch_size - 1) // config.batch_size, len(batch))
         raw = fetch_bigquant_daily_history_batch(
             batch,
-            start_date=latest_bigquant,
+            start_date=backfill_start,
             end_date=latest_bigquant,
             datasource=config.datasource,
             adjust="qfq",
@@ -223,6 +231,9 @@ def run_update(config: DailyUpdateConfig) -> dict:
             "latest_local_date": latest_bigquant,
             "updated_rows": len(runtime_df),
             "updated_symbols": int(runtime_df["symbol"].nunique()),
+            "updated_dates": sorted(runtime_df["date"].dropna().unique().tolist()),
+            "backfill_start_date": backfill_start,
+            "backfill_end_date": latest_bigquant,
             "merged_rows": len(merged),
             "merged_symbols": int(merged["symbol"].nunique()),
             "test_start_date": test_start,

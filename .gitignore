@@ -16,6 +16,7 @@ env/
 .env.*
 !.env.example
 .feishu_webhook
+!.feishu_webhook.example
 
 # Runtime outputs
 data/
