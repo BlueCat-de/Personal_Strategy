@@ -291,6 +291,40 @@ BigQuant turn => 本地 turnover
 
 ## 生成离线数据
 
+仓库内提供了一份已压缩的 BigQuant 离线数据快照，路径为：
+
+```text
+data_snapshots/a_share_12m_bigquant_20260708.tar.gz
+```
+
+这份快照覆盖：
+
+```text
+start=2025-01-09
+end=2026-07-08
+rows=1,085,028
+symbols=3,045
+```
+
+如果只是希望快速复现当前策略，不想在新环境重新消耗 BigQuant cell 配额，可以直接解压：
+
+```bash
+mkdir -p data/offline
+tar -xzf data_snapshots/a_share_12m_bigquant_20260708.tar.gz -C data/offline
+```
+
+解压后会得到：
+
+```text
+data/offline/a_share_12m_bigquant/prices_long.csv
+data/offline/a_share_12m_bigquant/universe.csv
+data/offline/a_share_12m_bigquant/manifest.json
+data/offline/a_share_12m_bigquant/symbols/*.csv
+data/offline/a_share_12m_bigquant/daily_update_summary.json
+```
+
+后续每日增量更新会在这份快照基础上继续补齐新交易日。若你希望完全重新生成数据，再使用下面的 BigQuant 取数命令。
+
 ### 小样本 smoke test
 
 首次在新环境中建议先跑 5 只股票的小样本，验证 BigQuant Key、SDK 和文件写入是否正常：
