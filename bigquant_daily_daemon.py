@@ -276,6 +276,8 @@ def run_data_update(args: argparse.Namespace, state: dict) -> dict:
             args.env_file,
             "--batch-size",
             str(args.batch_size),
+            "--min-start-date",
+            args.data_min_start_date,
         ],
     )
     code, output = run_command(command, REPO_ROOT, log_path)
@@ -511,6 +513,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--retry-seconds", type=int, default=1800)
     parser.add_argument("--batch-size", type=int, default=100)
     parser.add_argument("--data-dir", default=str(DEFAULT_DATA_DIR))
+    parser.add_argument("--data-min-start-date", default=os.environ.get("BIGQUANT_DATA_MIN_START_DATE", "2024-01-01"))
     parser.add_argument("--strategy-output-root", default=str(DEFAULT_STRATEGY_OUTPUT_ROOT))
     parser.add_argument("--strategy-version", default=os.environ.get("BIGQUANT_STRATEGY_VERSION", "v4"))
     parser.add_argument("--strategy-start-date", default=os.environ.get("BIGQUANT_STRATEGY_START_DATE", "2025-07-05"))

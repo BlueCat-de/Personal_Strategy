@@ -42,6 +42,7 @@ class DailyUpdateConfig:
     end_date: str
     months: int
     warmup_days: int
+    min_start_date: str | None
     env_file: Path
     datasource: str
     batch_size: int
@@ -98,7 +99,14 @@ def resolve_latest_bigquant_date(config: DailyUpdateConfig) -> str | None:
     return iso_date(str(raw["date"].max()))
 
 
-def merge_prices(output_dir: Path, runtime: pd.DataFrame, fetch_start: str) -> pd.DataFrame:
+def retention_start(fetch_start: str, min_start_date: str | None) -> str:
+    start = iso_date(fetch_start)
+    if min_start_date:
+        start = min(start, iso_date(min_start_date))
+    return start
+
+
+def merge_prices(output_dir: Path, runtime: pd.DataFrame, keep_start: str) -> pd.DataFrame:
     prices_file = output_dir / "prices_long.csv"
     if prices_file.exists():
         existing = pd.read_csv(prices_file, dtype={"symbol": str})
@@ -115,7 +123,7 @@ def merge_prices(output_dir: Path, runtime: pd.DataFrame, fetch_start: str) -> p
         existing = existing[~existing["date"].isin(update_dates)]
 
     merged = pd.concat([existing, runtime], ignore_index=True)
-    merged = merged[merged["date"] >= iso_date(fetch_start)]
+    merged = merged[merged["date"] >= iso_date(keep_start)]
     merged = merged.drop_duplicates(["date", "symbol"], keep="last")
     merged = merged.sort_values(["date", "symbol"]).reset_index(drop=True)
     for col in RUNTIME_COLUMNS:
@@ -125,7 +133,7 @@ def merge_prices(output_dir: Path, runtime: pd.DataFrame, fetch_start: str) -> p
     return merged[RUNTIME_COLUMNS]
 
 
-def update_symbol_files(output_dir: Path, runtime: pd.DataFrame, fetch_start: str) -> None:
+def update_symbol_files(output_dir: Path, runtime: pd.DataFrame, keep_start: str) -> None:
     symbol_dir = output_dir / "symbols"
     symbol_dir.mkdir(parents=True, exist_ok=True)
     for symbol, frame in runtime.groupby("symbol", sort=True):
@@ -142,7 +150,7 @@ def update_symbol_files(output_dir: Path, runtime: pd.DataFrame, fetch_start: st
         dates = set(frame["date"].dropna().unique())
         existing = existing[~existing["date"].isin(dates)]
         merged = pd.concat([existing, frame], ignore_index=True)
-        merged = merged[merged["date"] >= iso_date(fetch_start)]
+        merged = merged[merged["date"] >= iso_date(keep_start)]
         merged = merged.drop_duplicates(["date", "symbol"], keep="last")
         merged = merged.sort_values("date").reset_index(drop=True)
         atomic_write_csv(merged[RUNTIME_COLUMNS], path)
@@ -223,8 +231,9 @@ def run_update(config: DailyUpdateConfig) -> dict:
         write_summary(output_dir, summary)
         return summary
 
-    merged = merge_prices(output_dir, runtime_df, fetch_start)
-    update_symbol_files(output_dir, runtime_df, fetch_start)
+    keep_start = retention_start(fetch_start, config.min_start_date)
+    merged = merge_prices(output_dir, runtime_df, keep_start)
+    update_symbol_files(output_dir, runtime_df, keep_start)
     summary.update(
         {
             "status": "updated",
@@ -238,6 +247,7 @@ def run_update(config: DailyUpdateConfig) -> dict:
             "merged_symbols": int(merged["symbol"].nunique()),
             "test_start_date": test_start,
             "fetch_start_date": fetch_start,
+            "retention_start_date": keep_start,
             "config": {**asdict(config), "output_dir": str(output_dir), "env_file": str(config.env_file)},
         }
     )
@@ -251,6 +261,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--end-date", default=pd.Timestamp.today().strftime("%Y-%m-%d"))
     parser.add_argument("--months", type=int, default=12)
     parser.add_argument("--warmup-days", type=int, default=180)
+    parser.add_argument(
+        "--min-start-date",
+        help="Keep existing rows from at least this date when merging daily updates. Useful after historical backfills.",
+    )
     parser.add_argument("--env-file", default=str(DEFAULT_ENV_FILE))
     parser.add_argument("--datasource", default=DEFAULT_DATASOURCE)
     parser.add_argument("--batch-size", type=int, default=100)
@@ -266,6 +280,7 @@ def main() -> None:
         end_date=iso_date(args.end_date),
         months=args.months,
         warmup_days=args.warmup_days,
+        min_start_date=iso_date(args.min_start_date) if args.min_start_date else None,
         env_file=Path(args.env_file),
         datasource=args.datasource,
         batch_size=args.batch_size,
