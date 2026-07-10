@@ -12,7 +12,7 @@ import signal
 import subprocess
 import time
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -26,10 +26,16 @@ DEFAULT_PID_FILE = REPO_ROOT / "run/bigquant_daily_daemon.pid"
 DEFAULT_LOG_DIR = REPO_ROOT / "logs/bigquant_daily"
 DEFAULT_DATA_DIR = REPO_ROOT / "data/offline/a_share_12m_bigquant"
 DEFAULT_STRATEGY_OUTPUT_ROOT = REPO_ROOT / "data/backtests/daily_bigquant_strategy_signals"
+LOCAL_TZ = timezone(timedelta(hours=8), "Asia/Shanghai")
+
+
+def local_now() -> datetime:
+    """Return scheduler time in China Standard Time, independent of host TZ."""
+    return datetime.now(LOCAL_TZ)
 
 
 def now_text() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return local_now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def compact_date(value: str | datetime) -> str:
@@ -41,7 +47,7 @@ def iso_date(value: str | datetime) -> str:
 
 
 def today_iso() -> str:
-    return datetime.now().strftime("%Y-%m-%d")
+    return local_now().strftime("%Y-%m-%d")
 
 
 def load_json(path: Path, default: dict) -> dict:
@@ -224,7 +230,7 @@ def format_transactions(transactions: list[dict]) -> str:
 
 
 def due(time_text: str) -> bool:
-    return datetime.now().strftime("%H:%M") >= time_text
+    return local_now().strftime("%H:%M") >= time_text
 
 
 def should_run_data_update(state: dict, today: str) -> bool:
