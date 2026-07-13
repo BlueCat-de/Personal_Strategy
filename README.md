@@ -1,12 +1,18 @@
 # Personal Strategy
 
-Personal Strategy 是一个 BigQuant SDK-only 的 A 股量化研究、离线取数、BigTrader 回测和每日策略提醒项目。当前分支遵循“奥卡姆剃刀”原则：数据源统一使用 BigQuant DAI，回测统一使用 BigTrader，本地只保留运行所必需的脚本、报告和部署工具。
+Personal Strategy 是一个 A 股量化研究仓库。仓库历史主链路基于 `BigQuant DAI + BigTrader`，当前已经保留一份可直接复现的 `BigQuant` 离线数据快照，同时正在迁移到 `Tushare + 本地回测` 架构。
 
-本项目仅用于个人量化研究和交易辅助，不构成投资建议，也不会自动下单。每日飞书消息给出的是基于 BigQuant 数据和 BigTrader 回测口径生成的次日操作参考，实盘下单前必须核对账户资金、持仓、价格、涨跌停、停牌和可交易性。
+当前最重要的事实有两点：
+
+1. `BigQuant` 权限目前不可再依赖，因此仓库内现成可复现入口以 `已打包的 BigQuant 离线快照` 为主。
+2. `Tushare` 迁移脚本已经落地，但还没有跑通完整数据链路和策略链路，暂时不应作为默认生产方案。
+
+本项目仅用于个人量化研究和交易辅助，不构成投资建议，也不会自动下单。任何回测结果、每日信号或调仓建议都需要在实盘前人工核对账户资金、持仓、价格、涨跌停、停牌和可交易性。
 
 ## 目录
 
 - [项目目标](#项目目标)
+- [当前状态](#当前状态)
 - [整体架构](#整体架构)
 - [代码结构](#代码结构)
 - [Git 忽略策略](#git-忽略策略)
@@ -32,6 +38,47 @@ Personal Strategy 是一个 BigQuant SDK-only 的 A 股量化研究、离线取�
 3. 每日夜间自动更新数据，在数据更新到当天交易日后运行策略，并通过飞书或 Lark 机器人推送持仓调整建议。
 
 当前生产默认策略是 `v4`，即小资金高置信度 A 股策略。它最多持有 2 只股票，周频调仓，日线级别交易，强调 A 股真实约束：T+1、手续费、印花税、最低佣金、主板可交易范围和风险退出。
+
+## 当前状态
+
+### 已经完成
+
+- 历史 `BigQuant` 主链路代码仍然保留：离线取数、增量更新、`BigTrader` 回测、每日 daemon 都还在。
+- 仓库内已经打包了一份可直接使用的 `BigQuant` 离线数据快照：
+
+```text
+packages/a_share_12m_bigquant_snapshot_20260709.tar.gz
+```
+
+- 当前这份快照大小约 `90.7 MB`，压缩包解开后可得到：
+
+```text
+data/offline/a_share_12m_bigquant/prices_long.csv
+data/offline/a_share_12m_bigquant/universe.csv
+data/offline/a_share_12m_bigquant/manifest.json
+data/offline/a_share_12m_bigquant/daily_update_summary.json
+data/offline/a_share_12m_bigquant/historical_backfill_summary.json
+```
+
+- `Tushare` 迁移第一版代码已经添加：
+  - `tushare_provider.py`
+  - `generate_offline_a_share_tushare.py`
+  - `update_offline_a_share_tushare_daily.py`
+  - `local_backtest.py`
+  - `local_strategy.py`
+  - `tushare_daily_daemon.py`
+
+### 还没有完成
+
+- `Tushare` 全量离线数据链路还没有完成端到端验证。
+- `local_strategy.py` 目前在实际数据上暴露了重复索引问题，说明 `Tushare` 数据整理还有待修正。
+- `README` 中仍保留大量历史 `BigQuant` 说明；本次更新后，优先以“使用已打包快照复现”为准。
+- 还没有完成一次稳定的 `Tushare -> 本地回测 -> daemon` 全流程验收。
+
+### 当前建议
+
+- 如果你的目标是 `现在就能复现已有策略结果`，优先使用仓库内的 `BigQuant` 快照包。
+- 如果你的目标是 `继续推进去 BigQuant 化`，下一阶段应先修复 `Tushare` 数据去重和本地回测联调，再替换默认运行入口。
 
 ## 整体架构
 
@@ -69,10 +116,13 @@ bigquant_daily_daemon.py + launchd
 
 ```text
 .env.example
-  BigQuant API Key 和运行参数模板。复制为 .env.local 后填写真实值。
+  当前默认模板已切换为 Tushare Token 和本地策略运行参数。
 
 .feishu_webhook.example
   飞书 / Lark 机器人 webhook 模板。复制为 .feishu_webhook 后填写真实 URL。
+
+packages/a_share_12m_bigquant_snapshot_20260709.tar.gz
+  已打包并可提交到 Git 的 BigQuant 离线数据快照。当前推荐优先用它复现现有研究结果。
 
 bigquant_provider.py
   BigQuant DAI 数据适配层。负责 API Key 初始化、多 Key 配额切换、股票代码转换、字段查询、复权和单位转换。
@@ -88,6 +138,24 @@ bigquant_strategy.py
 
 bigquant_daily_daemon.py
   每日生产调度进程。负责定时取数、失败重试、策略运行、飞书推送、PID 文件和状态文件。
+
+tushare_provider.py
+  Tushare 数据适配层。负责 token 读取、股票列表、交易日、日线、复权因子、daily_basic、涨跌停和停牌接口。
+
+generate_offline_a_share_tushare.py
+  Tushare 全量离线行情生成脚本。当前已实现，但还未完成全链路验证。
+
+update_offline_a_share_tushare_daily.py
+  Tushare 每日增量取数脚本。当前已实现，但还未完成生产验证。
+
+local_backtest.py
+  本地回测引擎。支持下一交易日开盘成交、T+1、整数手、手续费、涨跌停和停牌约束。
+
+local_strategy.py
+  使用本地离线数据的策略与本地回测入口。当前还在联调阶段。
+
+tushare_daily_daemon.py
+  面向 Tushare + 本地回测的每日调度脚本。当前还未完成生产验收。
 
 install_bigquant_launchd.py
   macOS launchd 安装脚本。用于登录后自动启动 daemon，并在异常退出后拉起。
@@ -117,6 +185,7 @@ requirements.txt
 ```text
 提交到 Git:
   源码、README、研究报告、requirements.txt、.env.example、.feishu_webhook.example
+  packages/a_share_12m_bigquant_snapshot_20260709.tar.gz
 
 不提交到 Git:
   .env.local            # 真实 BigQuant API Key
@@ -129,19 +198,20 @@ requirements.txt
   strategies/           # 本地私有策略资产
 ```
 
-真实密钥、机器人地址和本地数据都是运行必要依赖，但不应进入 Git。新环境通过模板文件和 README 指令生成这些文件，这样既能复现运行，又不会泄露本地隐私资产。
+真实密钥、机器人地址和本地运行目录仍不应进入 Git；但当前仓库允许提交一个经过人工确认的 `BigQuant` 压缩快照，目的是在失去 BigQuant 权限后，仍能复现已有研究结果。
 
 ## 环境要求
 
 推荐环境：
 
 ```text
-操作系统：macOS
+操作系统：Linux / macOS
 Python：3.11.x
 环境管理：conda / miniforge / miniconda
-BigQuant SDK：bigquant[bigtrader]
-调度托管：launchd
-网络：可以访问 BigQuant SDK 服务和飞书 / Lark webhook
+当前可用数据复现：直接解压 packages 中的 BigQuant 快照
+迁移方向：Tushare + 本地回测
+调度托管：nohup / systemd / launchd 均可
+网络：如果继续推进迁移，需要访问 Tushare Pro 和飞书 / Lark webhook
 ```
 
 Python 依赖：
@@ -149,13 +219,7 @@ Python 依赖：
 ```text
 pandas>=2.0.0
 numpy>=1.24.0
-bigquant[bigtrader]  # 从 BigQuant 官方 PyPI 源安装
-```
-
-BigQuant SDK 安装源：
-
-```text
-https://pypi.bigquant.com/simple/
+tushare>=1.2.89
 ```
 
 ## 首次安装
@@ -197,7 +261,7 @@ PY
 
 ## 本地配置文件
 
-复制 BigQuant 环境变量模板：
+复制环境变量模板：
 
 ```bash
 cp .env.example .env.local
@@ -206,15 +270,12 @@ cp .env.example .env.local
 编辑 `.env.local`：
 
 ```bash
-BIGQUANT_API_KEY=你的主 BigQuant API Key
-BIGQUANT_API_KEY2=你的备用 BigQuant API Key，可为空
-BIGQUANT_STRATEGY_VERSION=v4
-BIGQUANT_STRATEGY_START_DATE=2025-07-05
-BIGQUANT_WARMUP_START_DATE=2025-01-07
-BIGQUANT_INITIAL_CASH=100000
+TUSHARE_TOKEN=你的 Tushare Token
+LOCAL_STRATEGY_VERSION=v4
+LOCAL_STRATEGY_START_DATE=2025-07-05
+LOCAL_WARMUP_START_DATE=2025-01-07
+LOCAL_INITIAL_CASH=100000
 ```
-
-`BIGQUANT_API_KEY2` 是可选项。当主 Key 返回配额不足错误时，`bigquant_provider.py` 会自动切换到备用 Key。日志只打印 key slot，不打印真实 Key。
 
 复制飞书 webhook 模板：
 
@@ -294,23 +355,26 @@ BigQuant turn => 本地 turnover
 仓库内提供了一份已压缩的 BigQuant 离线数据快照，路径为：
 
 ```text
-data_snapshots/a_share_12m_bigquant_20260708.tar.gz
+packages/a_share_12m_bigquant_snapshot_20260709.tar.gz
 ```
 
 这份快照覆盖：
 
 ```text
-start=2025-01-09
-end=2026-07-08
-rows=1,085,028
-symbols=3,045
+latest_local_date=2026-07-09
+prices_long.csv=215,271,344 bytes
+universe.csv=90,353 bytes
+manifest.json=665,204 bytes
+daily_update_summary.json=339 bytes
+historical_backfill_summary.json=607 bytes
+snapshot_tar_gz=90,747,036 bytes
 ```
 
-如果只是希望快速复现当前策略，不想在新环境重新消耗 BigQuant cell 配额，可以直接解压：
+如果只是希望快速复现当前策略，而不再依赖 BigQuant 权限，可以直接解压：
 
 ```bash
-mkdir -p data/offline
-tar -xzf data_snapshots/a_share_12m_bigquant_20260708.tar.gz -C data/offline
+mkdir -p data/offline/a_share_12m_bigquant
+tar -xzf packages/a_share_12m_bigquant_snapshot_20260709.tar.gz -C .
 ```
 
 解压后会得到：
@@ -319,13 +383,40 @@ tar -xzf data_snapshots/a_share_12m_bigquant_20260708.tar.gz -C data/offline
 data/offline/a_share_12m_bigquant/prices_long.csv
 data/offline/a_share_12m_bigquant/universe.csv
 data/offline/a_share_12m_bigquant/manifest.json
-data/offline/a_share_12m_bigquant/symbols/*.csv
 data/offline/a_share_12m_bigquant/daily_update_summary.json
+data/offline/a_share_12m_bigquant/historical_backfill_summary.json
 ```
 
-后续每日增量更新会在这份快照基础上继续补齐新交易日。若你希望完全重新生成数据，再使用下面的 BigQuant 取数命令。
+当前建议直接基于这份快照做回测复现。由于 BigQuant 权限不可用，下面保留的 BigQuant 取数命令仅作为历史记录，不再作为默认操作。
 
-### 小样本 smoke test
+### 如何使用现有 BigQuant 数据
+
+如果你只想用仓库中已有数据复现策略，最短路径如下：
+
+```bash
+mkdir -p data/offline/a_share_12m_bigquant
+tar -xzf packages/a_share_12m_bigquant_snapshot_20260709.tar.gz -C .
+
+LATEST_DATE="$(python - <<'PY'
+import pandas as pd
+dates = pd.read_csv('data/offline/a_share_12m_bigquant/prices_long.csv', usecols=['date'])['date']
+print(dates.max())
+PY
+)"
+
+python bigquant_strategy.py \
+  --strategy-version v4 \
+  --warmup-start-date 2025-01-07 \
+  --start-date 2025-07-05 \
+  --end-date "$LATEST_DATE" \
+  --initial-cash 100000 \
+  --prices-file data/offline/a_share_12m_bigquant/prices_long.csv \
+  --output-dir data/backtests/manual_check
+```
+
+注意：这一步依然调用 `bigquant_strategy.py`，但只复用本地 `prices_long.csv` 时，至少可以先验证信号生成和部分本地逻辑。若运行到 `BigTrader` 部分，仍然会受 BigQuant 环境限制。
+
+### 历史 BigQuant 生成命令
 
 首次在新环境中建议先跑 5 只股票的小样本，验证 BigQuant Key、SDK 和文件写入是否正常：
 
