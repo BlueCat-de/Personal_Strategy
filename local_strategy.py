@@ -21,7 +21,7 @@ from local_backtest import BacktestConfig, run_local_backtest
 
 LOGGER = logging.getLogger("local_strategy")
 REPO_ROOT = Path(__file__).resolve().parent
-DEFAULT_PRICES_FILE = REPO_ROOT / "data/offline/a_share_12m_tushare/prices_long.csv"
+DEFAULT_PRICES_FILE = REPO_ROOT / "data/offline/a_share_history_tushare/prices_long.csv"
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "data/backtests/local_strategy"
 
 
@@ -105,10 +105,17 @@ def atomic_write_csv(df: pd.DataFrame, path: Path) -> None:
 
 
 def load_prices(path: Path, cfg: StrategyConfig) -> dict[str, pd.DataFrame]:
+    if not path.exists():
+        raise FileNotFoundError(f"prices file not found: {path}")
     bars = pd.read_csv(path, dtype={"symbol": str, "ts_code": str})
+    required = {"date", "symbol", "open", "close", "volume", "amount", "turnover"}
+    missing = sorted(required - set(bars.columns))
+    if missing:
+        raise ValueError(f"prices file missing required columns: {missing}")
     bars["date"] = pd.to_datetime(bars["date"])
     bars["symbol"] = bars["symbol"].astype(str).str.replace(r"\.0$", "", regex=True).str.zfill(6)
     bars = bars[(bars["date"] >= pd.to_datetime(cfg.warmup_start_date)) & (bars["date"] <= pd.to_datetime(cfg.end_date))].copy()
+    bars = bars.sort_values(["date", "symbol"]).drop_duplicates(["date", "symbol"], keep="last")
     numeric_cols = [col for col in ["open", "high", "low", "close", "volume", "amount", "turnover", "up_limit", "down_limit", "is_suspended"] if col in bars.columns]
     for col in numeric_cols:
         bars[col] = pd.to_numeric(bars[col], errors="coerce")
@@ -116,9 +123,23 @@ def load_prices(path: Path, cfg: StrategyConfig) -> dict[str, pd.DataFrame]:
     for col in ["open", "close", "volume", "amount", "turnover", "up_limit", "down_limit", "is_suspended"]:
         if col in bars.columns:
             pivots[col] = bars.pivot(index="date", columns="symbol", values=col).sort_index()
+    if "close" not in pivots or pivots["close"].empty:
+        raise ValueError(f"prices file has no usable close data in {cfg.warmup_start_date} ~ {cfg.end_date}")
     pivots["open"] = pivots["open"].fillna(pivots["close"])
+    if "volume" not in pivots:
+        pivots["volume"] = pd.DataFrame(0.0, index=pivots["close"].index, columns=pivots["close"].columns)
+    if "amount" not in pivots:
+        pivots["amount"] = pivots["open"] * pivots["volume"] * 100.0
+    if "turnover" not in pivots:
+        pivots["turnover"] = pd.DataFrame(np.nan, index=pivots["close"].index, columns=pivots["close"].columns)
+    if "up_limit" not in pivots:
+        pivots["up_limit"] = pd.DataFrame(np.nan, index=pivots["close"].index, columns=pivots["close"].columns)
+    if "down_limit" not in pivots:
+        pivots["down_limit"] = pd.DataFrame(np.nan, index=pivots["close"].index, columns=pivots["close"].columns)
     if "is_suspended" in pivots:
         pivots["is_suspended"] = pivots["is_suspended"].fillna(0.0)
+    else:
+        pivots["is_suspended"] = pd.DataFrame(0.0, index=pivots["close"].index, columns=pivots["close"].columns)
     return pivots
 
 

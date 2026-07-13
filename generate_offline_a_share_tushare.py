@@ -151,13 +151,27 @@ def fetch_trade_date_bundle(trade_date: str, universe_ts_codes: set[str], env_fi
     daily = daily[daily["ts_code"].isin(universe_ts_codes)].copy()
     if daily.empty:
         return pd.DataFrame(columns=RUNTIME_COLUMNS)
+    daily = daily.drop_duplicates(["ts_code", "trade_date"], keep="last")
     adj = fetch_adj_factor(trade_date, env_file)
     basic = fetch_daily_basic(trade_date, env_file)
     limits = fetch_stk_limit(trade_date, env_file)
     suspended = fetch_suspend(trade_date, env_file)
 
-    frame = daily.merge(adj[["ts_code", "trade_date", "adj_factor"]], on=["ts_code", "trade_date"], how="left")
-    frame = frame.merge(basic[["ts_code", "trade_date", "turnover_rate"]], on=["ts_code", "trade_date"], how="left")
+    for frame in [adj, basic, limits, suspended]:
+        if not frame.empty:
+            frame.drop_duplicates(["ts_code", "trade_date"], keep="last", inplace=True)
+
+    adj_cols = ["ts_code", "trade_date", "adj_factor"]
+    basic_cols = ["ts_code", "trade_date", "turnover_rate"]
+    limit_cols = ["ts_code", "trade_date", "up_limit", "down_limit"]
+    suspend_cols = ["ts_code", "trade_date", "is_suspended"]
+    adj = adj.reindex(columns=adj_cols)
+    basic = basic.reindex(columns=basic_cols)
+    limits = limits.reindex(columns=limit_cols)
+    suspended = suspended.reindex(columns=suspend_cols)
+
+    frame = daily.merge(adj, on=["ts_code", "trade_date"], how="left")
+    frame = frame.merge(basic, on=["ts_code", "trade_date"], how="left")
     frame = frame.merge(limits, on=["ts_code", "trade_date"], how="left")
     frame = frame.merge(suspended, on=["ts_code", "trade_date"], how="left")
     frame["is_suspended"] = frame["is_suspended"].fillna(0).astype(int)
@@ -171,13 +185,20 @@ def fetch_trade_date_bundle(trade_date: str, universe_ts_codes: set[str], env_fi
     frame["raw_close"] = pd.to_numeric(frame["close"], errors="coerce")
     frame["volume"] = pd.to_numeric(frame["vol"], errors="coerce")
     frame["adj_factor"] = pd.to_numeric(frame["adj_factor"], errors="coerce").fillna(1.0)
-    return frame
+    return frame.drop_duplicates(["trade_date", "symbol"], keep="last").reset_index(drop=True)
 
 
 def apply_front_adjustment(frame: pd.DataFrame) -> pd.DataFrame:
     if frame.empty:
         return pd.DataFrame(columns=RUNTIME_COLUMNS)
     result = frame.copy()
+    if "trade_date" not in result.columns and "date" in result.columns:
+        result["trade_date"] = result["date"]
+    if "trade_date" in result.columns:
+        result["trade_date"] = pd.to_datetime(result["trade_date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    if "symbol" in result.columns:
+        result["symbol"] = result["symbol"].map(normalize_symbol)
+    result = result.drop_duplicates(["trade_date", "symbol"], keep="last")
     result["adj_factor"] = pd.to_numeric(result["adj_factor"], errors="coerce").fillna(1.0)
     latest_adj = result.groupby("symbol", observed=True)["adj_factor"].transform("last").replace(0, 1.0).fillna(1.0)
     ratio = result["adj_factor"] / latest_adj

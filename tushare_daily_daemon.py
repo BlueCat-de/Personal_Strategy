@@ -24,7 +24,7 @@ DEFAULT_WEBHOOK_FILE = REPO_ROOT / ".feishu_webhook"
 DEFAULT_STATE_FILE = REPO_ROOT / "run/tushare_daily_daemon_state.json"
 DEFAULT_PID_FILE = REPO_ROOT / "run/tushare_daily_daemon.pid"
 DEFAULT_LOG_DIR = REPO_ROOT / "logs/tushare_daily"
-DEFAULT_DATA_DIR = REPO_ROOT / "data/offline/a_share_12m_tushare"
+DEFAULT_DATA_DIR = REPO_ROOT / "data/offline/a_share_history_tushare"
 DEFAULT_STRATEGY_OUTPUT_ROOT = REPO_ROOT / "data/backtests/daily_local_strategy_signals"
 LOCAL_TZ = timezone(timedelta(hours=8), "Asia/Shanghai")
 
@@ -234,8 +234,10 @@ def should_run_strategy(state: dict, latest_data_date: str | None, today: str) -
     return bool(data_ready and state.get("strategy_success_data_date") != latest_data_date)
 
 
-def build_conda_python(conda_path: Path, env_name: str, script: str, extra_args: list[str]) -> list[str]:
-    return [str(conda_path), "run", "-n", env_name, "python", "-u", script, *extra_args]
+def build_python_command(args: argparse.Namespace, script: str, extra_args: list[str]) -> list[str]:
+    if args.python:
+        return [args.python, "-u", script, *extra_args]
+    return [str(Path(args.conda)), "run", "-n", args.conda_env, "python", "-u", script, *extra_args]
 
 
 def run_data_update(args: argparse.Namespace, state: dict) -> dict:
@@ -245,10 +247,9 @@ def run_data_update(args: argparse.Namespace, state: dict) -> dict:
     state["data_last_status"] = "in_progress"
     state["data_started_at"] = now_text()
     save_json(Path(args.state_file), state)
-    command = build_conda_python(
-        Path(args.conda),
-        args.conda_env,
-        "update_offline_a_share_tushare_daily.py",
+    command = build_python_command(
+        args,
+        args.update_script,
         ["--end-date", today, "--output-dir", args.data_dir, "--env-file", args.env_file],
     )
     code, _ = run_command(command, REPO_ROOT, log_path)
@@ -289,9 +290,8 @@ def run_strategy(args: argparse.Namespace, state: dict, latest_data_date: str) -
     state["strategy_last_status"] = "in_progress"
     state["strategy_started_at"] = now_text()
     save_json(Path(args.state_file), state)
-    command = build_conda_python(
-        Path(args.conda),
-        args.conda_env,
+    command = build_python_command(
+        args,
         "local_strategy.py",
         [
             "--strategy-version",
@@ -344,14 +344,16 @@ def run_strategy(args: argparse.Namespace, state: dict, latest_data_date: str) -
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run daily Tushare update and local strategy notifications.")
+    parser.add_argument("--python", default=os.environ.get("LOCAL_PYTHON", ""), help="Python executable to run child jobs directly. If set, --conda/--conda-env are ignored.")
     parser.add_argument("--conda", default=str(DEFAULT_CONDA))
-    parser.add_argument("--conda-env", default="bigquant")
+    parser.add_argument("--conda-env", default=os.environ.get("LOCAL_CONDA_ENV", "strategy"))
     parser.add_argument("--env-file", default=str(REPO_ROOT / ".env.local"))
     parser.add_argument("--webhook-file", default=str(DEFAULT_WEBHOOK_FILE))
     parser.add_argument("--state-file", default=str(DEFAULT_STATE_FILE))
     parser.add_argument("--pid-file", default=str(DEFAULT_PID_FILE))
     parser.add_argument("--log-dir", default=str(DEFAULT_LOG_DIR))
     parser.add_argument("--data-dir", default=str(DEFAULT_DATA_DIR))
+    parser.add_argument("--update-script", default="update_offline_a_share_history_tushare_daily.py")
     parser.add_argument("--strategy-output-root", default=str(DEFAULT_STRATEGY_OUTPUT_ROOT))
     parser.add_argument("--data-time", default="21:10")
     parser.add_argument("--strategy-time", default="21:30")

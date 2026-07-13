@@ -22,7 +22,6 @@ env/
 data/
 logs/
 run/
-.bigquant/
 .crawler_state/
 
 # Local private strategy experiments.
