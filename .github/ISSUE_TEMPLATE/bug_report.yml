@@ -1,0 +1,32 @@
+name: Bug report
+description: Report a reproducible defect
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: textarea
+    attributes:
+      label: Description
+      description: What happened and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Reproduction
+      description: Provide a minimal command or code sample. Remove all secrets.
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: Version or commit
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Environment
+      description: Python version, operating system, and dependency versions.
+  - type: checkboxes
+    attributes:
+      label: Data safety
+      options:
+        - label: I removed tokens, webhook URLs, and licensed market data.
+          required: true

@@ -1,0 +1,5 @@
+# Copy this file to .feishu_webhook and paste one webhook URL per line.
+# Do not commit .feishu_webhook.
+
+https://open.feishu.cn/open-apis/bot/v2/hook/<YOUR_FEISHU_BOT_TOKEN>
+# https://open.larkoffice.com/open-apis/bot/v2/hook/<YOUR_LARK_BOT_TOKEN>
