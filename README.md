@@ -1,400 +1,246 @@
-# Personal Strategy
+# AShare Quant
 
-Personal Strategy 是一个个人 A 股量化研究与每日策略提醒项目。当前代码只保留四条主线：
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
+[![License: GPL v3](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
 
-```text
-历史离线快照 -> Tushare 增量补齐 -> 本地策略/回测 -> 飞书提醒
-```
+Point-in-time A-share data engineering, factor research, realistic backtesting,
+and daily signal automation.
 
-项目不自动下单。每日推送给出的持仓和调仓建议，实盘执行前仍需要人工核对账户现金、实际持仓、停牌、涨跌停、100 股整数手和成交价格。
+[中文文档](docs/README_zh-CN.md) | [Architecture](docs/ARCHITECTURE.md) |
+[Python API](docs/API.md) | [Contributing](CONTRIBUTING.md)
 
-## 当前功能
+> This project is for research and education. It does not provide investment
+> advice, guarantee returns, or place live orders.
 
-- 使用 `packages/a_share_history_snapshot_20260709.tar.gz` 作为历史行情基座。
-- 使用 Tushare Pro 从历史数据最后一天开始补齐新增交易日。
-- 输出统一行情文件 `data/offline/a_share_history_tushare/prices_long.csv`。
-- 使用 `local_strategy.py` 生成 v4 小资金高置信度策略信号。
-- 使用 `local_backtest.py` 做本地撮合回测。
-- 使用 `tushare_daily_daemon.py` 做每日定时取数、策略运行和飞书推送。
+## Features
 
-## 代码结构
+- Builds a point-in-time A-share dataset from Tushare Pro.
+- Separates adjusted factor prices from raw execution prices.
+- Restores historical listing, delisting, ST, suspension, and price-limit state.
+- Executes signals at the next trading day's raw open.
+- Models board lots, commissions, stamp duty, minimum fees, and bilateral slippage.
+- Includes a defensive v4 strategy and a diversified stock-only factor strategy.
+- Supports market-cap, industry, style, rebalance-date, and slippage robustness tests.
+- Runs scheduled data updates, strategy checks, and optional Feishu/Lark notifications.
 
-```text
-.env.example
-  本地配置模板。
+The repository intentionally excludes market data, API tokens, webhook URLs,
+runtime logs, and backtest outputs.
 
-.feishu_webhook.example
-  飞书 / Lark 机器人 webhook 模板。
+## Tech Stack
 
-tushare_provider.py
-  Tushare Pro 接口适配层，负责 token、交易日、日线、复权因子、换手率、涨跌停、停牌数据。
+- Python 3.11+
+- pandas and NumPy
+- Tushare Pro
+- setuptools with a `src/` package layout
+- unittest/pytest-compatible tests
 
-update_offline_a_share_history_tushare_daily.py
-  当前默认取数脚本。先从历史快照初始化，再用 Tushare 补齐新增交易日。
-
-generate_offline_a_share_tushare.py
-  Tushare 标准化取数工具。当前默认补数脚本复用其中的单日数据整理函数。
-
-local_strategy.py
-  本地策略入口，默认读取 `data/offline/a_share_history_tushare/prices_long.csv`。
-
-local_backtest.py
-  本地回测撮合引擎。
-
-tushare_daily_daemon.py
-  每日自动任务：定时取数、策略运行、飞书推送、PID 和状态管理。
-
-packages/a_share_history_snapshot_20260709.tar.gz
-  历史行情快照。用于初始化本地行情，不包含密钥。
-```
-
-## Git 忽略策略
-
-提交到 Git：
+## Project Layout
 
 ```text
-源码
-README
-requirements.txt
-.env.example
-.feishu_webhook.example
-历史行情快照压缩包
+.
+├── src/ashare_quant/
+│   ├── automation/       # Daily scheduler and Feishu/Lark notifications
+│   ├── data/             # Tushare adapter, PIT builder, industry history
+│   ├── research/         # Factor panels and stability experiments
+│   ├── strategies/       # v4 and stable stock-only strategies
+│   ├── backtest.py       # Next-open execution engine
+│   ├── benchmark.py      # CSI 300 retrieval and relative metrics
+│   └── paths.py          # Repository-local paths
+├── tests/
+├── docs/
+├── pyproject.toml
+└── requirements.txt
 ```
 
-不提交到 Git：
+Local data remains under `data/` and is ignored by Git.
 
-```text
-.env.local          # 真实 Tushare Token / 其他密钥
-.feishu_webhook     # 真实机器人 webhook
-data/               # 本地行情缓存和回测结果
-logs/               # 运行日志
-run/                # PID 和 daemon 状态
-strategies/         # 私有策略资产
-.trae/ .vscode/     # 本机 IDE 配置
-```
-
-## 环境安装
-
-推荐环境：
-
-```text
-Python: 3.11
-数据源: Tushare Pro
-调度: systemd 或 nohup
-```
-
-安装：
+## Installation
 
 ```bash
 git clone https://github.com/BlueCat-de/Personal_Strategy.git
 cd Personal_Strategy
 
 python3.11 -m venv .venv
-. .venv/bin/activate
-python -m pip install --upgrade pip setuptools wheel
-python -m pip install -r requirements.txt
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e ".[dev]"
 ```
 
-验证依赖：
+For runtime dependencies only:
 
 ```bash
-python - <<'PY'
-import pandas as pd
-import numpy as np
-import tushare as ts
-print("env ok")
-PY
+python -m pip install -r requirements.txt
+python -m pip install -e . --no-deps
 ```
 
-## 配置文件
+## Configuration
 
 ```bash
 cp .env.example .env.local
 cp .feishu_webhook.example .feishu_webhook
 ```
 
-`.env.local` 示例：
+Set your Tushare token in `.env.local`:
 
-```text
-TUSHARE_TOKEN=你的 Tushare Pro Token
-LOCAL_STRATEGY_VERSION=v4
-LOCAL_STRATEGY_START_DATE=2025-07-05
-LOCAL_WARMUP_START_DATE=2025-01-07
-LOCAL_INITIAL_CASH=100000
-LOCAL_PYTHON=/绝对路径/Personal_Strategy/.venv/bin/python
-LOCAL_CONDA_ENV=strategy
+```dotenv
+TUSHARE_TOKEN=replace_with_your_token
 ```
 
-`.feishu_webhook` 每行一个机器人地址：
+Webhook configuration is optional. Never commit `.env.local` or
+`.feishu_webhook`.
 
-```text
-https://open.feishu.cn/open-apis/bot/v2/hook/你的token
-https://open.larkoffice.com/open-apis/bot/v2/hook/你的token
-```
+## Quick Start
 
-## 行情 Schema
+### 1. Build point-in-time market data
 
-默认行情文件：
-
-```text
-data/offline/a_share_history_tushare/prices_long.csv
-```
-
-字段：
-
-```text
-date
-symbol
-open
-high
-low
-close
-volume
-amount
-turnover
-```
-
-口径：
-
-```text
-历史段：来自离线快照
-增量段：来自 Tushare daily + adj_factor + daily_basic
-价格拼接：使用历史最后一天作为重叠日，按每只股票的重叠日 close 比例把后续 Tushare OHLC 映射到历史价格尺度
-volume：手
-amount：元
-turnover：小数，例如 0.01 表示 1%
-```
-
-## 初始化和增量补齐行情
-
-小样本验证：
+Use a short smoke test first:
 
 ```bash
-. .venv/bin/activate
+ashare-rebuild-data \
+  --start-date 2024-01-01 \
+  --end-date 2024-03-31 \
+  --limit 30 \
+  --output-dir data/offline/smoke
+```
 
-python update_offline_a_share_history_tushare_daily.py \
+Build the full local dataset:
+
+```bash
+ashare-rebuild-data \
+  --start-date 2020-01-01 \
   --end-date "$(date +%F)" \
-  --output-dir data/offline/a_share_history_smoke \
-  --snapshot packages/a_share_history_snapshot_20260709.tar.gz \
-  --env-file .env.local \
-  --limit 20 \
-  --log-level INFO
+  --output-dir data/offline/a_share_history_tushare
 ```
 
-正式生成/更新：
+Expected core files:
 
-```bash
-python update_offline_a_share_history_tushare_daily.py \
-  --end-date "$(date +%F)" \
-  --output-dir data/offline/a_share_history_tushare \
-  --snapshot packages/a_share_history_snapshot_20260709.tar.gz \
-  --env-file .env.local \
-  --log-level INFO
+```text
+data/offline/a_share_history_tushare/
+├── prices_long.csv
+├── daily_universe.csv
+└── universe.csv
 ```
 
-增量逻辑：
+See [Architecture](docs/ARCHITECTURE.md) for the schema and PIT rules.
 
-1. 如果输出目录不存在，先从历史快照初始化。
-2. 读取本地最新日期。
-3. 查询 Tushare 在 `end-date` 前最近的开市交易日。
-4. 如果本地已到最新交易日，则跳过。
-5. 如果本地落后，则拉取本地最新日作为重叠锚点，再拉取后续缺失交易日。
-6. 使用重叠日逐股票计算价格比例，拼接后续 Tushare OHLC。
-7. 合并后保持 9 列 schema，并按 `date + symbol` 去重。
-
-## 运行本地策略
+### 2. Fetch historical Shenwan industries
 
 ```bash
-python local_strategy.py \
+ashare-fetch-industries
+```
+
+This produces historical level-one membership with effective entry and exit
+dates. It is required by the industry-neutral stock strategy.
+
+### 3. Run v4
+
+```bash
+ashare-v4 \
   --strategy-version v4 \
-  --warmup-start-date 2025-01-07 \
-  --start-date 2025-07-05 \
-  --end-date "$(python - <<'PY'
-import pandas as pd
-dates = pd.read_csv('data/offline/a_share_history_tushare/prices_long.csv', usecols=['date'])['date']
-print(dates.max())
-PY
-)" \
+  --warmup-start-date 2024-01-01 \
+  --start-date 2024-07-01 \
+  --end-date 2026-07-16 \
   --initial-cash 100000 \
   --prices-file data/offline/a_share_history_tushare/prices_long.csv \
-  --output-dir data/backtests/local_strategy_v4_latest
+  --output-dir data/backtests/v4
 ```
 
-输出文件：
-
-```text
-local_weight_signals.csv
-local_signal_debug.csv
-local_raw_perf.csv
-local_trades.csv
-local_backtest_summary.json
-```
-
-## v4 策略逻辑
-
-策略定位：
-
-```text
-小资金高置信度
-最多持有 2 只股票
-周频选股调仓
-日频风控卖出
-弱市场主动空仓
-```
-
-市场环境判断：
-
-```text
-breadth20 / breadth60 / breadth120
-median_ret10 / median_ret20 / median_ret60
-market_vol20
-weak_drawdown_ratio
-```
-
-候选过滤：
-
-```text
-价格在 2.5 到 85 元
-收盘价高于 MA20 / MA60 / MA120
-20 日动量 > 0
-60 日动量 > 0
-120 日动量 > -3%
-20 日动量 < 45%
-5 日动量 < 45%
-20 日波动率 < 5.5%
-60 日回撤 > -22%
-开盘跳空 < 6%
-20 日平均成交值有效
-```
-
-v4 打分：
-
-```text
-24%: 60 日动量
-18%: 120 日动量
-10%: 20 日动量
-18%: 收盘价 / MA60 - 1
-16%: 低 20 日波动率
- 8%: 低 60 日下行波动
- 4%: 低 60 日回撤压力
- 2%: 20 日平均成交值
-```
-
-买入规则：
-
-```text
-每周第一个交易日生成目标权重
-候选数量少于 2 只则不开仓
-选综合分最高的最多 2 只
-按 20 日波动率倒数分配权重
-单只股票最高 34%
-市场中性总仓位 34%
-市场强势总仓位 68%
-```
-
-卖出规则：
-
-```text
-每周重算后不再入选则卖出
-市场环境转弱则清仓
-收盘价跌破 20 日均线则卖出
-亏损达到 6% 固定止损
-从持仓最高价回撤 10% 移动止损
-```
-
-## 本地回测口径
-
-```text
-信号日收盘后生成目标权重
-下一交易日开盘调仓
-100 股整数手
-先卖后买
-现金不足时自动缩减买入手数
-涨停不可买
-跌停不可卖
-停牌不可交易
-买入成本 0.03%
-卖出成本 0.13%
-最低佣金 5 元
-```
-
-## 每日 daemon
+### 4. Run the stock-only stable strategy
 
 ```bash
-mkdir -p logs run
+ashare-stable \
+  --start-date 2021-07-01 \
+  --warmup-start-date 2020-01-02 \
+  --end-date 2026-07-16 \
+  --initial-cash 45000 \
+  --slippage 0.001 \
+  --output-dir data/backtests/stable_stock_alpha
+```
 
-nohup "$(pwd)/.venv/bin/python" -u tushare_daily_daemon.py \
-  --python "$(pwd)/.venv/bin/python" \
-  --env-file .env.local \
-  --webhook-file .feishu_webhook \
+This strategy uses only individual A-share stocks and cash. It does not use
+ETFs, index weights, futures, options, or other derivatives.
+
+### 5. Run robustness research
+
+```bash
+ashare-stability \
+  --start-date 2021-07-01 \
+  --validation-start 2024-01-01 \
+  --end-date 2026-07-16 \
+  --initial-cash 45000
+```
+
+The experiment covers factor-weight neighborhoods, 8/10/12 holdings,
+monthly/bimonthly rebalancing, market-cap and industry cross-sections, and
+5/10/20/50 bp slippage. Current research does **not** establish a strategy
+that beats the CSI 300 in every reported year.
+
+## Daily Deployment
+
+Run with an explicit Python executable:
+
+```bash
+ashare-daemon \
+  --python "$PWD/.venv/bin/python" \
   --data-time 21:10 \
-  --strategy-time 21:30 \
-  --interval-seconds 300 \
-  --data-dir data/offline/a_share_history_tushare \
-  --strategy-output-root data/backtests/daily_local_strategy_signals \
-  > logs/tushare_daily_daemon.nohup.log 2>&1 &
-
-echo $! > run/tushare_daily_daemon_launcher.pid
+  --strategy-time 21:30
 ```
 
-检查状态：
+For production, use a process supervisor such as systemd, launchd, or
+Supervisor. Keep runtime state in `run/` and logs in `logs/`; both are ignored.
+
+The daemon generates signals and notifications only. It does not connect to a
+broker or submit orders.
+
+## Python API
+
+```python
+from ashare_quant.backtest import BacktestConfig, run_local_backtest
+from ashare_quant.strategies.v4 import StrategyConfig, build_targets, load_prices
+
+prices = load_prices("data/offline/a_share_history_tushare/prices_long.csv", config)
+targets, signals, debug = build_targets(prices, config)
+result = run_local_backtest(
+    prices,
+    targets,
+    BacktestConfig(initial_cash=100_000, slippage=0.001),
+    strategy_name="example",
+)
+```
+
+See [docs/API.md](docs/API.md) for supported public modules and data contracts.
+
+## Testing
 
 ```bash
-ps -ef | grep -E '[t]ushare_daily_daemon.py|[u]pdate_offline_a_share_history_tushare_daily.py|[l]ocal_strategy.py'
-cat run/tushare_daily_daemon.pid
-cat run/tushare_daily_daemon_state.json
-tail -n 120 logs/tushare_daily_daemon.nohup.log
-tail -n 120 logs/tushare_daily/$(date +%Y%m%d)_data_update.log
-tail -n 120 logs/tushare_daily/$(date +%Y%m%d)_strategy.log
+python -m pytest
+ruff check src tests
 ```
 
-停止：
+The execution tests cover zero slippage, bilateral slippage, and invalid
+slippage configuration.
 
-```bash
-kill "$(cat run/tushare_daily_daemon.pid)"
-```
+## Data and Reproducibility
 
-## systemd 示例
+Tushare data is subject to its own license and account permissions. This
+repository does not redistribute Tushare market data. Backtests are only
+reproducible when the same point-in-time inputs and configuration are used.
 
-```ini
-[Unit]
-Description=Personal Strategy Tushare Daily Daemon
-After=network-online.target
-Wants=network-online.target
+Historical snapshots stored under `data/snapshots/` are local assets and are
+not part of the Git repository.
 
-[Service]
-Type=simple
-WorkingDirectory=/opt/personal-strategy/Personal_Strategy
-ExecStart=/opt/personal-strategy/Personal_Strategy/.venv/bin/python -u tushare_daily_daemon.py --python /opt/personal-strategy/Personal_Strategy/.venv/bin/python --env-file .env.local --webhook-file .feishu_webhook --data-time 21:10 --strategy-time 21:30 --interval-seconds 300 --data-dir data/offline/a_share_history_tushare --strategy-output-root data/backtests/daily_local_strategy_signals
-Restart=always
-RestartSec=10
-Environment=PYTHONUNBUFFERED=1
+## Contributing
 
-[Install]
-WantedBy=multi-user.target
-```
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening an issue or pull request.
+Security reports should follow [SECURITY.md](SECURITY.md). Community
+participation is governed by [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
-## 验收清单
+## License
 
-```bash
-python -m py_compile \
-  tushare_provider.py \
-  update_offline_a_share_history_tushare_daily.py \
-  generate_offline_a_share_tushare.py \
-  local_backtest.py \
-  local_strategy.py \
-  tushare_daily_daemon.py
-```
+Copyright (C) BlueCat-de.
 
-重复键检查：
+Licensed under the [GNU General Public License v3.0](LICENSE).
 
-```bash
-python - <<'PY'
-import pandas as pd
-p = 'data/offline/a_share_history_tushare/prices_long.csv'
-df = pd.read_csv(p, dtype={'symbol': str})
-dup = df.duplicated(['date', 'symbol']).sum()
-print('rows=', len(df), 'symbols=', df['symbol'].nunique(), 'dates=', df['date'].nunique(), 'duplicates=', dup)
-assert dup == 0
-PY
-```
+## Maintainer
+
+[BlueCat-de](https://github.com/BlueCat-de)

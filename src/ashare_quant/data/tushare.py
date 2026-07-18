@@ -12,10 +12,9 @@ from pathlib import Path
 import pandas as pd
 import tushare as ts
 
+from ashare_quant.paths import DEFAULT_ENV_FILE
 
 LOGGER = logging.getLogger("tushare_provider")
-REPO_ROOT = Path(__file__).resolve().parent
-DEFAULT_ENV_FILE = REPO_ROOT / ".env.local"
 
 
 def load_env_file(path: Path = DEFAULT_ENV_FILE) -> dict[str, str]:
@@ -116,6 +115,40 @@ def fetch_stock_basic(env_file: Path = DEFAULT_ENV_FILE) -> pd.DataFrame:
         return frame
     frame["symbol"] = frame["ts_code"].map(from_ts_code)
     return frame.sort_values("ts_code").reset_index(drop=True)
+
+
+def fetch_stock_basic_all(env_file: Path = DEFAULT_ENV_FILE) -> pd.DataFrame:
+    pro = get_pro_client(env_file)
+    fields = "ts_code,symbol,name,area,industry,market,list_date,delist_date,exchange"
+    frames: list[pd.DataFrame] = []
+    for status in ["L", "D", "P"]:
+        frame = _retry_call(lambda status=status: pro.stock_basic(exchange="", list_status=status, fields=fields))
+        if frame.empty:
+            continue
+        frame["list_status"] = status
+        frames.append(frame)
+    if not frames:
+        return pd.DataFrame(columns=[*fields.split(","), "list_status"])
+    result = pd.concat(frames, ignore_index=True)
+    result["symbol"] = result["ts_code"].map(from_ts_code)
+    return result.sort_values("ts_code").reset_index(drop=True)
+
+
+def fetch_namechange(start_date: str, end_date: str, env_file: Path = DEFAULT_ENV_FILE) -> pd.DataFrame:
+    pro = get_pro_client(env_file)
+    fields = "ts_code,name,start_date,end_date,change_reason"
+    frame = _retry_call(
+        lambda: pro.namechange(
+            start_date=pd.to_datetime(start_date).strftime("%Y%m%d"),
+            end_date=pd.to_datetime(end_date).strftime("%Y%m%d"),
+            fields=fields,
+        )
+    )
+    if frame.empty:
+        return pd.DataFrame(columns=fields.split(","))
+    frame["start_date"] = pd.to_datetime(frame["start_date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    frame["end_date"] = pd.to_datetime(frame["end_date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    return frame.sort_values(["ts_code", "start_date"]).reset_index(drop=True)
 
 
 def fetch_trade_calendar(start_date: str, end_date: str, env_file: Path = DEFAULT_ENV_FILE) -> pd.DataFrame:

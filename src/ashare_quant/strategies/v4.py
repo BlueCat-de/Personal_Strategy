@@ -16,13 +16,12 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from local_backtest import BacktestConfig, run_local_backtest
+from ashare_quant.backtest import BacktestConfig, run_local_backtest
+from ashare_quant.paths import DEFAULT_PRICES_FILE, PROJECT_ROOT
 
 
 LOGGER = logging.getLogger("local_strategy")
-REPO_ROOT = Path(__file__).resolve().parent
-DEFAULT_PRICES_FILE = REPO_ROOT / "data/offline/a_share_history_tushare/prices_long.csv"
-DEFAULT_OUTPUT_DIR = REPO_ROOT / "data/backtests/local_strategy"
+DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "data/backtests/local_strategy"
 
 
 @dataclass(frozen=True)
@@ -67,7 +66,9 @@ class StrategyConfig:
 
 
 def setup_logging(level: str) -> None:
-    logging.basicConfig(level=getattr(logging, level), format="%(asctime)s %(levelname)s %(message)s", force=True)
+    logging.basicConfig(
+        level=getattr(logging, level), format="%(asctime)s %(levelname)s %(message)s", force=True
+    )
 
 
 def iso_date(value: str) -> str:
@@ -78,7 +79,9 @@ def atomic_write_text(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path: Path | None = None
     try:
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as handle:
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=path.parent, delete=False
+        ) as handle:
             tmp_path = Path(handle.name)
             handle.write(content)
             handle.flush()
@@ -93,7 +96,9 @@ def atomic_write_csv(df: pd.DataFrame, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path: Path | None = None
     try:
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", newline="", dir=path.parent, delete=False) as handle:
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", newline="", dir=path.parent, delete=False
+        ) as handle:
             tmp_path = Path(handle.name)
             df.to_csv(handle, index=False)
             handle.flush()
@@ -107,39 +112,105 @@ def atomic_write_csv(df: pd.DataFrame, path: Path) -> None:
 def load_prices(path: Path, cfg: StrategyConfig) -> dict[str, pd.DataFrame]:
     if not path.exists():
         raise FileNotFoundError(f"prices file not found: {path}")
-    bars = pd.read_csv(path, dtype={"symbol": str, "ts_code": str})
+    bars = pd.read_csv(
+        path, dtype={"symbol": str, "ts_code": str, "list_date": str, "delist_date": str}
+    )
     required = {"date", "symbol", "open", "close", "volume", "amount", "turnover"}
     missing = sorted(required - set(bars.columns))
     if missing:
         raise ValueError(f"prices file missing required columns: {missing}")
     bars["date"] = pd.to_datetime(bars["date"])
     bars["symbol"] = bars["symbol"].astype(str).str.replace(r"\.0$", "", regex=True).str.zfill(6)
-    bars = bars[(bars["date"] >= pd.to_datetime(cfg.warmup_start_date)) & (bars["date"] <= pd.to_datetime(cfg.end_date))].copy()
+    bars = bars[
+        (bars["date"] >= pd.to_datetime(cfg.warmup_start_date))
+        & (bars["date"] <= pd.to_datetime(cfg.end_date))
+    ].copy()
     bars = bars.sort_values(["date", "symbol"]).drop_duplicates(["date", "symbol"], keep="last")
-    numeric_cols = [col for col in ["open", "high", "low", "close", "volume", "amount", "turnover", "up_limit", "down_limit", "is_suspended"] if col in bars.columns]
+    numeric_cols = [
+        col
+        for col in [
+            "open",
+            "high",
+            "low",
+            "close",
+            "raw_open",
+            "raw_high",
+            "raw_low",
+            "raw_close",
+            "volume",
+            "amount",
+            "turnover",
+            "up_limit",
+            "down_limit",
+            "is_suspended",
+            "is_st",
+            "is_listed",
+        ]
+        if col in bars.columns
+    ]
     for col in numeric_cols:
         bars[col] = pd.to_numeric(bars[col], errors="coerce")
     pivots: dict[str, pd.DataFrame] = {}
-    for col in ["open", "close", "volume", "amount", "turnover", "up_limit", "down_limit", "is_suspended"]:
+    for col in [
+        "open",
+        "close",
+        "raw_open",
+        "raw_close",
+        "volume",
+        "amount",
+        "turnover",
+        "up_limit",
+        "down_limit",
+        "is_suspended",
+        "is_st",
+        "is_listed",
+    ]:
         if col in bars.columns:
             pivots[col] = bars.pivot(index="date", columns="symbol", values=col).sort_index()
     if "close" not in pivots or pivots["close"].empty:
-        raise ValueError(f"prices file has no usable close data in {cfg.warmup_start_date} ~ {cfg.end_date}")
-    pivots["open"] = pivots["open"].fillna(pivots["close"])
+        raise ValueError(
+            f"prices file has no usable close data in {cfg.warmup_start_date} ~ {cfg.end_date}"
+        )
+    if "raw_close" not in pivots:
+        pivots["raw_close"] = pivots["close"].copy()
+    if "raw_open" not in pivots:
+        pivots["raw_open"] = pivots["open"].copy()
     if "volume" not in pivots:
-        pivots["volume"] = pd.DataFrame(0.0, index=pivots["close"].index, columns=pivots["close"].columns)
+        pivots["volume"] = pd.DataFrame(
+            0.0, index=pivots["close"].index, columns=pivots["close"].columns
+        )
     if "amount" not in pivots:
-        pivots["amount"] = pivots["open"] * pivots["volume"] * 100.0
+        pivots["amount"] = pivots["raw_open"] * pivots["volume"] * 100.0
     if "turnover" not in pivots:
-        pivots["turnover"] = pd.DataFrame(np.nan, index=pivots["close"].index, columns=pivots["close"].columns)
+        pivots["turnover"] = pd.DataFrame(
+            np.nan, index=pivots["close"].index, columns=pivots["close"].columns
+        )
     if "up_limit" not in pivots:
-        pivots["up_limit"] = pd.DataFrame(np.nan, index=pivots["close"].index, columns=pivots["close"].columns)
+        pivots["up_limit"] = pd.DataFrame(
+            np.nan, index=pivots["close"].index, columns=pivots["close"].columns
+        )
     if "down_limit" not in pivots:
-        pivots["down_limit"] = pd.DataFrame(np.nan, index=pivots["close"].index, columns=pivots["close"].columns)
+        pivots["down_limit"] = pd.DataFrame(
+            np.nan, index=pivots["close"].index, columns=pivots["close"].columns
+        )
     if "is_suspended" in pivots:
         pivots["is_suspended"] = pivots["is_suspended"].fillna(0.0)
     else:
-        pivots["is_suspended"] = pd.DataFrame(0.0, index=pivots["close"].index, columns=pivots["close"].columns)
+        pivots["is_suspended"] = pd.DataFrame(
+            0.0, index=pivots["close"].index, columns=pivots["close"].columns
+        )
+    if "is_st" in pivots:
+        pivots["is_st"] = pivots["is_st"].fillna(0.0)
+    else:
+        pivots["is_st"] = pd.DataFrame(
+            0.0, index=pivots["close"].index, columns=pivots["close"].columns
+        )
+    if "is_listed" in pivots:
+        pivots["is_listed"] = pivots["is_listed"].fillna(0.0)
+    else:
+        pivots["is_listed"] = pd.DataFrame(
+            1.0, index=pivots["close"].index, columns=pivots["close"].columns
+        )
     return pivots
 
 
@@ -171,7 +242,9 @@ def high_conviction_market_exposure(close: pd.DataFrame, loc: int, config: Strat
     median_ret10 = float((last / history.iloc[-11] - 1).median())
     median_ret20 = float((last / history.iloc[-21] - 1).median())
     median_ret60 = float((last / history.iloc[-61] - 1).median())
-    market_vol20 = float(close.pct_change(fill_method=None).iloc[max(0, loc - 20) : loc + 1].std().median())
+    market_vol20 = float(
+        close.pct_change(fill_method=None).iloc[max(0, loc - 20) : loc + 1].std().median()
+    )
     recent = history.iloc[max(0, loc - 20) : loc + 1]
     weak_drawdown_ratio = float(((recent.iloc[-1] / recent.cummax().iloc[-1] - 1) < -0.10).mean())
     if (
@@ -217,14 +290,103 @@ def regime_adaptive_market_exposure(close: pd.DataFrame, loc: int, config: Strat
         or weak_drawdown_ratio > 0.16
     ):
         return 0.0
-    if breadth20 >= 0.62 and breadth60 >= 0.58 and median_ret20 > 0.015 and median_ret60 > 0.0 and market_vol20 < 0.017:
+    if (
+        breadth20 >= 0.62
+        and breadth60 >= 0.58
+        and median_ret20 > 0.015
+        and median_ret60 > 0.0
+        and market_vol20 < 0.017
+    ):
         return min(config.strong_total_weight, 0.68)
     if breadth20 >= 0.58 and breadth60 >= 0.54 and median_ret10 > -0.005:
         return min(config.neutral_total_weight, 0.34)
     return 0.0
 
 
-def allocate_two_names(selected: list[str], vol20: pd.Series, gross: float, max_position_weight: float) -> pd.Series:
+def weak_market_strategy_exposure(
+    close: pd.DataFrame, loc: int, config: StrategyConfig, style: str
+) -> float:
+    if loc < 120:
+        return 0.0
+    history = close.iloc[: loc + 1]
+    last = history.iloc[-1]
+    ma20 = history.rolling(20).mean().iloc[-1]
+    ma60 = history.rolling(60).mean().iloc[-1]
+    ma120 = history.rolling(120).mean().iloc[-1]
+    breadth20 = float((last > ma20).mean())
+    breadth60 = float((last > ma60).mean())
+    breadth120 = float((last > ma120).mean())
+    median_ret20 = float((last / history.iloc[-21] - 1).median())
+    median_ret60 = float((last / history.iloc[-61] - 1).median())
+    market_vol20 = float(
+        close.pct_change(fill_method=None).iloc[max(0, loc - 20) : loc + 1].std().median()
+    )
+    recent = history.iloc[max(0, loc - 20) : loc + 1]
+    weak_drawdown_ratio = float(((recent.iloc[-1] / recent.cummax().iloc[-1] - 1) < -0.10).mean())
+
+    panic = (
+        median_ret20 < -0.10
+        or median_ret60 < -0.16
+        or market_vol20 > 0.034
+        or weak_drawdown_ratio > 0.40
+    )
+    weak = (
+        breadth20 < 0.50
+        or breadth60 < 0.48
+        or breadth120 < 0.45
+        or median_ret20 < -0.03
+        or median_ret60 < -0.06
+    )
+    strong = breadth20 >= 0.58 and breadth60 >= 0.54 and median_ret20 > 0.0 and market_vol20 < 0.020
+
+    if style == "relative_strength":
+        if panic:
+            return 0.0
+        if weak:
+            return min(config.neutral_total_weight, 0.30)
+        if strong:
+            return min(config.strong_total_weight, 0.60)
+        return min(config.neutral_total_weight, 0.42)
+    if style == "quality_reversal":
+        if panic:
+            return 0.0 if market_vol20 > 0.038 else min(config.neutral_total_weight, 0.12)
+        if weak:
+            return min(config.neutral_total_weight, 0.24)
+        return min(config.neutral_total_weight, 0.30)
+    if style == "defensive_low_vol":
+        if panic:
+            return 0.0 if market_vol20 > 0.040 else min(config.neutral_total_weight, 0.18)
+        if weak:
+            return min(config.neutral_total_weight, 0.34)
+        if strong:
+            return min(config.neutral_total_weight, 0.28)
+        return min(config.neutral_total_weight, 0.42)
+    return high_conviction_market_exposure(close, loc, config)
+
+
+def defensive_overlay_exposure(close: pd.DataFrame, loc: int) -> float:
+    if loc < 120:
+        return 0.0
+    history = close.iloc[: loc + 1]
+    last = history.iloc[-1]
+    returns = close.pct_change(fill_method=None)
+    median_ret20 = float((last / history.iloc[-21] - 1).median())
+    median_ret60 = float((last / history.iloc[-61] - 1).median())
+    market_vol20 = float(returns.iloc[max(0, loc - 20) : loc + 1].std().median())
+    recent = history.iloc[max(0, loc - 20) : loc + 1]
+    weak_drawdown_ratio = float(((recent.iloc[-1] / recent.cummax().iloc[-1] - 1) < -0.10).mean())
+    panic = (
+        median_ret20 < -0.10
+        or median_ret60 < -0.16
+        or market_vol20 > 0.034
+        or weak_drawdown_ratio > 0.40
+    )
+    return 0.10 if panic else 0.20
+
+
+def allocate_two_names(
+    selected: list[str], vol20: pd.Series, gross: float, max_position_weight: float
+) -> pd.Series:
     weights = pd.Series(0.0, index=vol20.index)
     if not selected or gross <= 0:
         return weights
@@ -256,13 +418,33 @@ def append_signal_snapshot(rows: list[dict], dt_iso: str, current: pd.Series) ->
         rows.append({"date": dt_iso, "symbol": symbol, "target_weight": float(weight)})
 
 
-def build_targets(prices: dict[str, pd.DataFrame], config: StrategyConfig) -> tuple[dict[pd.Timestamp, pd.Series], pd.DataFrame, pd.DataFrame]:
+def build_targets(
+    prices: dict[str, pd.DataFrame], config: StrategyConfig
+) -> tuple[dict[pd.Timestamp, pd.Series], pd.DataFrame, pd.DataFrame]:
     close = prices["close"]
-    open_ = prices["open"].reindex_like(close).ffill().fillna(close)
-    volume = prices["volume"].reindex_like(close).ffill()
+    raw_close = prices.get("raw_close", close).reindex_like(close)
+    raw_open = prices.get("raw_open", prices["open"]).reindex_like(close)
+    volume = prices["volume"].reindex_like(close)
     amount = prices["amount"].reindex_like(close)
     turnover_rate = coerce_turnover_rate(prices["turnover"].reindex_like(close))
-    actual_traded_value = amount.where(amount.notna() & (amount > 0), open_ * volume * 100.0).replace([np.inf, -np.inf], np.nan)
+    is_suspended = (
+        prices.get("is_suspended", pd.DataFrame(0.0, index=close.index, columns=close.columns))
+        .reindex_like(close)
+        .fillna(0.0)
+    )
+    is_st = (
+        prices.get("is_st", pd.DataFrame(0.0, index=close.index, columns=close.columns))
+        .reindex_like(close)
+        .fillna(0.0)
+    )
+    is_listed = (
+        prices.get("is_listed", pd.DataFrame(1.0, index=close.index, columns=close.columns))
+        .reindex_like(close)
+        .fillna(0.0)
+    )
+    actual_traded_value = amount.where(
+        amount.notna() & (amount > 0), raw_open * volume * 100.0
+    ).replace([np.inf, -np.inf], np.nan)
     returns = close.pct_change(fill_method=None)
     weekly_dates = set(first_trading_day_each_week(pd.to_datetime(close.index)))
     formal_start = pd.to_datetime(config.start_date)
@@ -281,6 +463,8 @@ def build_targets(prices: dict[str, pd.DataFrame], config: StrategyConfig) -> tu
         if dt in weekly_dates and loc >= 120:
             history = close.iloc[: loc + 1]
             last = history.iloc[-1]
+            trade_last = raw_close.iloc[loc]
+            trade_open = raw_open.iloc[loc]
             mom5 = last / history.iloc[-6] - 1
             mom20 = last / history.iloc[-21] - 1
             mom60 = last / history.iloc[-61] - 1
@@ -300,11 +484,28 @@ def build_targets(prices: dict[str, pd.DataFrame], config: StrategyConfig) -> tu
             avg_volume20 = volume.iloc[max(0, loc - 20) : loc + 1].mean()
             volume_ratio20 = volume.iloc[loc] / avg_volume20
             amount_trend60 = avg_value20 / avg_value60 - 1.0
-            prev_close = history.iloc[-2]
-            signal_gap = open_.iloc[loc] / prev_close - 1
+            prev_trade_close = raw_close.iloc[loc - 1]
+            signal_gap = trade_open / prev_trade_close - 1
+            point_in_time_tradable = (
+                is_listed.iloc[loc].eq(1)
+                & is_st.iloc[loc].eq(0)
+                & is_suspended.iloc[loc].eq(0)
+                & trade_open.notna()
+                & trade_last.notna()
+                & (trade_open > 0)
+                & (trade_last > 0)
+            )
+            volume_ratio_inverse = -volume_ratio20
+            reversal_depth_score = -((drawdown60.abs() - 0.16).abs())
+            median_mom20 = float(mom20.median())
+            median_mom60 = float(mom60.median())
+            rs20 = mom20 - median_mom20
+            rs60 = mom60 - median_mom60
+            vol20_rank = pct_rank(vol20)
 
             tradable = (
-                last.between(config.min_price, config.max_price)
+                point_in_time_tradable
+                & trade_last.between(config.min_price, config.max_price)
                 & (last > ma20)
                 & (last > ma60)
                 & (last > ma120)
@@ -350,8 +551,78 @@ def build_targets(prices: dict[str, pd.DataFrame], config: StrategyConfig) -> tu
                     & (volume_ratio20 <= min(config.max_volume_ratio20, 2.8))
                     & (amount_trend60 >= max(config.min_amount_trend60, -0.12))
                 )
-                tradable = tradable & smooth_trend & liquidity_quality & (mom60 > max(config.min_mom60, 0.02)) & (mom120 > 0.0)
-
+                tradable = (
+                    tradable
+                    & smooth_trend
+                    & liquidity_quality
+                    & (mom60 > max(config.min_mom60, 0.02))
+                    & (mom120 > 0.0)
+                )
+            elif config.strategy_version == "v6_relative_strength":
+                tradable = (
+                    point_in_time_tradable
+                    & trade_last.between(config.min_price, config.max_price)
+                    & ((last > ma20) | (last > ma60 * 0.98))
+                    & (mom20 > -0.02)
+                    & (mom60 > -0.06)
+                    & (rs20 > 0.02)
+                    & (rs60 > 0.04)
+                    & (mom5 < 0.25)
+                    & (mom20 < 0.38)
+                    & (vol20 < 0.060)
+                    & (drawdown60 > -0.24)
+                    & (signal_gap < 0.045)
+                    & (avg_value20 >= config.min_amount20)
+                    & (avg_turnover20 >= config.min_turnover20)
+                    & (avg_turnover20 <= min(config.max_turnover20, 0.16))
+                    & (volume_ratio20 <= min(config.max_volume_ratio20, 2.8))
+                    & avg_value20.notna()
+                    & vol20.notna()
+                )
+            elif config.strategy_version == "v6_quality_reversal":
+                drawdown_depth_score = -((drawdown60.abs() - 0.18).abs())
+                tradable = (
+                    point_in_time_tradable
+                    & trade_last.between(config.min_price, config.max_price)
+                    & (last > ma120 * 0.85)
+                    & (last < ma60 * 1.06)
+                    & (drawdown60 < -0.08)
+                    & (drawdown60 > -0.30)
+                    & (mom5 > -0.04)
+                    & (mom20 > -0.18)
+                    & (rs20 > -0.04)
+                    & (positive_ratio20 >= 0.38)
+                    & (vol20 < 0.070)
+                    & (signal_gap < 0.035)
+                    & (avg_value20 >= config.min_amount20)
+                    & (avg_turnover20 <= min(config.max_turnover20, 0.14))
+                    & (volume_ratio20 <= 1.8)
+                    & avg_value20.notna()
+                    & vol20.notna()
+                )
+            elif config.strategy_version == "v7_ic_overlay":
+                tradable = tradable & (
+                    (avg_value20 >= config.min_amount20)
+                    & (volume_ratio20 <= min(config.max_volume_ratio20, 2.4))
+                )
+            elif config.strategy_version == "v6_defensive_low_vol":
+                turnover_balance = -((avg_turnover20 - 0.025).abs())
+                tradable = (
+                    point_in_time_tradable
+                    & trade_last.between(config.min_price, config.max_price)
+                    & ((last > ma120 * 0.95) | (last > ma60 * 0.96))
+                    & (mom60 > -0.08)
+                    & (mom120 > -0.12)
+                    & (drawdown60 > -0.16)
+                    & (vol20_rank <= 0.35)
+                    & (vol20 < 0.040)
+                    & (signal_gap < 0.035)
+                    & (avg_value20 >= max(config.min_amount20, 50_000_000.0))
+                    & (avg_turnover20 <= min(config.max_turnover20, 0.08))
+                    & (volume_ratio20 <= 1.8)
+                    & avg_value20.notna()
+                    & vol20.notna()
+                )
             if config.strategy_version == "v4_volume_enhanced":
                 score = (
                     0.20 * pct_rank(mom60)
@@ -395,6 +666,58 @@ def build_targets(prices: dict[str, pd.DataFrame], config: StrategyConfig) -> tu
                     + 0.03 * pct_rank(avg_value20)
                     + 0.02 * pct_rank(turnover_balance)
                 )
+            elif config.strategy_version == "v6_relative_strength":
+                score = (
+                    0.22 * pct_rank(rs60)
+                    + 0.18 * pct_rank(rs20)
+                    + 0.14 * pct_rank(mom60)
+                    + 0.12 * pct_rank(mom20)
+                    + 0.10 * pct_rank(last / ma60 - 1)
+                    + 0.10 * pct_rank(vol20, ascending=False)
+                    + 0.06 * pct_rank(drawdown60)
+                    + 0.04 * pct_rank(positive_ratio20)
+                    + 0.03 * pct_rank(avg_value20)
+                    + 0.01 * pct_rank(amount_trend60)
+                )
+            elif config.strategy_version == "v6_quality_reversal":
+                score = (
+                    0.20 * pct_rank(drawdown_depth_score)
+                    + 0.14 * pct_rank(rs20)
+                    + 0.12 * pct_rank(mom5)
+                    + 0.12 * pct_rank(positive_ratio20)
+                    + 0.12 * pct_rank(vol20, ascending=False)
+                    + 0.10 * pct_rank(downside60, ascending=False)
+                    + 0.08 * pct_rank(last / ma120 - 1)
+                    + 0.06 * pct_rank(avg_value20)
+                    + 0.04 * pct_rank(volume_ratio20, ascending=False)
+                    + 0.02 * pct_rank(amount_trend60)
+                )
+            elif config.strategy_version == "v7_ic_overlay":
+                score = (
+                    0.16 * pct_rank(mom60)
+                    + 0.12 * pct_rank(mom120)
+                    + 0.06 * pct_rank(mom20)
+                    + 0.10 * pct_rank(last / ma60 - 1)
+                    + 0.18 * pct_rank(vol20, ascending=False)
+                    + 0.12 * pct_rank(downside60, ascending=False)
+                    + 0.10 * pct_rank(volume_ratio_inverse)
+                    + 0.08 * pct_rank(reversal_depth_score)
+                    + 0.04 * pct_rank(drawdown60)
+                    + 0.02 * pct_rank(positive_ratio60)
+                    + 0.02 * pct_rank(amount_trend60)
+                )
+            elif config.strategy_version == "v6_defensive_low_vol":
+                score = (
+                    0.24 * pct_rank(vol20, ascending=False)
+                    + 0.16 * pct_rank(downside60, ascending=False)
+                    + 0.14 * pct_rank(drawdown60)
+                    + 0.12 * pct_rank(rs60)
+                    + 0.10 * pct_rank(mom60)
+                    + 0.08 * pct_rank(positive_ratio60)
+                    + 0.07 * pct_rank(avg_value20)
+                    + 0.05 * pct_rank(turnover_balance)
+                    + 0.04 * pct_rank(amount_trend60)
+                )
             else:
                 score = (
                     0.24 * pct_rank(mom60)
@@ -406,15 +729,70 @@ def build_targets(prices: dict[str, pd.DataFrame], config: StrategyConfig) -> tu
                     + 0.04 * pct_rank(drawdown60)
                     + 0.02 * pct_rank(avg_value20)
                 )
-            ranked = score[tradable.reindex(score.index).fillna(False)].dropna().sort_values(ascending=False)
+            ranked = (
+                score[tradable.reindex(score.index).fillna(False)]
+                .dropna()
+                .sort_values(ascending=False)
+            )
             selected = ranked.head(config.max_positions).index.tolist()
-            gross = regime_adaptive_market_exposure(close, loc, config) if config.strategy_version == "v5_regime_adaptive" else high_conviction_market_exposure(close, loc, config)
+            if config.strategy_version == "v5_regime_adaptive":
+                gross = regime_adaptive_market_exposure(close, loc, config)
+            elif config.strategy_version == "v6_relative_strength":
+                gross = weak_market_strategy_exposure(close, loc, config, "relative_strength")
+            elif config.strategy_version == "v6_quality_reversal":
+                gross = weak_market_strategy_exposure(close, loc, config, "quality_reversal")
+            elif config.strategy_version == "v6_defensive_low_vol":
+                gross = weak_market_strategy_exposure(close, loc, config, "defensive_low_vol")
+            else:
+                gross = high_conviction_market_exposure(close, loc, config)
+            if config.strategy_version == "v7_ic_overlay" and gross <= 0:
+                overlay_tradable = (
+                    point_in_time_tradable
+                    & trade_last.between(config.min_price, config.max_price)
+                    & ((last > ma120 * 0.96) | (last > ma60 * 0.96))
+                    & (mom60 > -0.10)
+                    & (mom120 > -0.14)
+                    & (drawdown60 > -0.18)
+                    & (vol20_rank <= 0.35)
+                    & (vol20 < 0.040)
+                    & (signal_gap < 0.035)
+                    & (avg_value20 >= max(config.min_amount20, 50_000_000.0))
+                    & (volume_ratio20 <= 1.8)
+                    & avg_value20.notna()
+                    & vol20.notna()
+                )
+                overlay_score = (
+                    0.36 * pct_rank(vol20, ascending=False)
+                    + 0.22 * pct_rank(downside60, ascending=False)
+                    + 0.16 * pct_rank(volume_ratio_inverse)
+                    + 0.10 * pct_rank(reversal_depth_score)
+                    + 0.08 * pct_rank(drawdown60)
+                    + 0.05 * pct_rank(rs60)
+                    + 0.03 * pct_rank(amount_trend60)
+                )
+                overlay_ranked = (
+                    overlay_score[overlay_tradable.reindex(overlay_score.index).fillna(False)]
+                    .dropna()
+                    .sort_values(ascending=False)
+                )
+                if len(overlay_ranked) >= config.min_candidates:
+                    ranked = overlay_ranked
+                    selected = ranked.head(max(config.max_positions, 3)).index.tolist()
+                    gross = defensive_overlay_exposure(close, loc)
+                else:
+                    ranked = overlay_ranked
+                    selected = []
+                    gross = 0.0
             if len(ranked) < config.min_candidates:
                 gross = 0.0
 
             previous = current.copy()
             if gross > 0 and selected:
-                current = allocate_two_names(selected, vol20, gross, config.max_position_weight)
+                if config.strategy_version == "v7_ic_overlay" and gross <= 0.20:
+                    max_weight = min(config.max_position_weight, 0.08)
+                else:
+                    max_weight = config.max_position_weight
+                current = allocate_two_names(selected, vol20, gross, max_weight)
                 entry_price = {s: float(last.loc[s]) for s in selected if current.loc[s] > 0}
                 peak_price = {s: float(last.loc[s]) for s in selected if current.loc[s] > 0}
             else:
@@ -463,7 +841,6 @@ def build_targets(prices: dict[str, pd.DataFrame], config: StrategyConfig) -> tu
 
 def save_outputs(
     config: StrategyConfig,
-    prices: dict[str, pd.DataFrame],
     signals: pd.DataFrame,
     debug: pd.DataFrame,
     backtest,
@@ -478,16 +855,25 @@ def save_outputs(
         "engine": "local_backtest",
         "data_source": "tushare_offline",
         "strategy": f"small_account_high_conviction_policy_{config.strategy_version}_local",
-        "config": {**asdict(config), "prices_file": str(config.prices_file), "output_dir": str(config.output_dir)},
+        "config": {
+            **asdict(config),
+            "prices_file": str(config.prices_file),
+            "output_dir": str(config.output_dir),
+        },
         "signal_rows": len(signals),
         "traded_instruments": int(signals["symbol"].dropna().nunique()) if not signals.empty else 0,
         "summary": backtest.summary,
     }
-    atomic_write_text(config.output_dir / "local_backtest_summary.json", json.dumps(summary, ensure_ascii=False, indent=2, default=str))
+    atomic_write_text(
+        config.output_dir / "local_backtest_summary.json",
+        json.dumps(summary, ensure_ascii=False, indent=2, default=str),
+    )
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run the local v4/v5 strategy on Tushare offline data.")
+    parser = argparse.ArgumentParser(
+        description="Run the local v4/v5/v6 strategy on Tushare offline data."
+    )
     parser.add_argument("--start-date", default="2025-07-05")
     parser.add_argument("--end-date", default=pd.Timestamp.today().strftime("%Y-%m-%d"))
     parser.add_argument("--warmup-start-date", default="2025-01-07")
@@ -513,7 +899,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stop-loss", type=float, default=0.06)
     parser.add_argument("--trailing-stop", type=float, default=0.10)
     parser.add_argument("--trend-exit-window", type=int, default=20)
-    parser.add_argument("--strategy-version", choices=["v4", "v4_volume_enhanced", "v4_volume_light", "v4_volume_risk_filter", "v5_regime_adaptive"], default="v4")
+    parser.add_argument(
+        "--strategy-version",
+        choices=[
+            "v4",
+            "v4_volume_enhanced",
+            "v4_volume_light",
+            "v4_volume_risk_filter",
+            "v5_regime_adaptive",
+            "v6_relative_strength",
+            "v6_quality_reversal",
+            "v6_defensive_low_vol",
+            "v7_ic_overlay",
+        ],
+        default="v4",
+    )
     parser.add_argument("--min-amount20", type=float, default=30_000_000.0)
     parser.add_argument("--min-turnover20", type=float, default=0.005)
     parser.add_argument("--max-turnover20", type=float, default=0.18)
@@ -525,7 +925,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-cost", type=float, default=5.0)
     parser.add_argument("--prices-file", default=str(DEFAULT_PRICES_FILE))
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
-    parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
+    parser.add_argument(
+        "--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"]
+    )
     return parser.parse_args()
 
 
@@ -576,10 +978,15 @@ def main() -> None:
     backtest = run_local_backtest(
         prices,
         targets,
-        BacktestConfig(initial_cash=config.initial_cash, buy_cost=config.buy_cost, sell_cost=config.sell_cost, min_cost=config.min_cost),
+        BacktestConfig(
+            initial_cash=config.initial_cash,
+            buy_cost=config.buy_cost,
+            sell_cost=config.sell_cost,
+            min_cost=config.min_cost,
+        ),
         strategy_name=f"local_{config.strategy_version}",
     )
-    save_outputs(config, prices, signals, debug, backtest)
+    save_outputs(config, signals, debug, backtest)
     print(json.dumps(backtest.summary, ensure_ascii=False, indent=2, default=str))
     print(f"Output: {config.output_dir.resolve()}")
 

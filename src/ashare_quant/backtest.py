@@ -15,6 +15,7 @@ class BacktestConfig:
     initial_cash: float = 100_000.0
     buy_cost: float = 0.0003
     sell_cost: float = 0.0013
+    slippage: float = 0.0
     min_cost: float = 5.0
     lot_size: int = 100
     benchmark_symbol: str = "000300.SH"
@@ -101,11 +102,19 @@ def run_local_backtest(
     *,
     strategy_name: str,
 ) -> BacktestArtifacts:
-    close = prices["close"]
-    open_ = prices["open"].reindex_like(close).ffill().fillna(close)
-    up_limit = prices.get("up_limit", pd.DataFrame(index=close.index, columns=close.columns, dtype=float)).reindex_like(close)
-    down_limit = prices.get("down_limit", pd.DataFrame(index=close.index, columns=close.columns, dtype=float)).reindex_like(close)
-    suspended = prices.get("is_suspended", pd.DataFrame(0, index=close.index, columns=close.columns))
+    if config.slippage < 0:
+        raise ValueError("slippage must be non-negative")
+    close = prices.get("raw_close", prices["close"])
+    open_ = prices.get("raw_open", prices["open"]).reindex_like(close)
+    up_limit = prices.get(
+        "up_limit", pd.DataFrame(index=close.index, columns=close.columns, dtype=float)
+    ).reindex_like(close)
+    down_limit = prices.get(
+        "down_limit", pd.DataFrame(index=close.index, columns=close.columns, dtype=float)
+    ).reindex_like(close)
+    suspended = prices.get(
+        "is_suspended", pd.DataFrame(0, index=close.index, columns=close.columns)
+    )
     dates = list(close.index)
     symbols = list(close.columns)
     cash = config.initial_cash
@@ -114,34 +123,73 @@ def run_local_backtest(
     raw_rows: list[dict] = []
     trade_rows: list[dict] = []
     prev_equity = config.initial_cash
+    mark_prices = close.ffill().iloc[0].reindex(symbols).fillna(0.0)
 
     for dt in dates:
         day = dt.strftime("%Y-%m-%d")
         day_trades: list[dict] = []
         op = open_.loc[dt]
-        cl = close.loc[dt].fillna(op).fillna(0.0)
-        equity_open = cash + float((shares * op.fillna(0.0)).sum())
+        cl = close.loc[dt]
+        mark_prices = mark_prices.where(cl.isna(), cl).fillna(0.0)
+        equity_open = cash + float((shares * mark_prices).sum())
         buy_value = 0.0
         sell_value = 0.0
         commission = 0.0
+        slippage_cost = 0.0
 
         if pending is not None:
             target_value = pending.reindex(symbols).fillna(0.0) * equity_open
-            trade_symbols = sorted(set(target_value[target_value > 0].index) | set(shares[shares > 0].index))
+            trade_symbols = sorted(
+                set(target_value[target_value > 0].index) | set(shares[shares > 0].index)
+            )
             for side in ["sell", "buy"]:
                 for symbol in trade_symbols:
-                    price = float(op.get(symbol, np.nan))
-                    suspended_flag = bool(pd.to_numeric(suspended.loc[dt, symbol], errors="coerce")) if symbol in suspended.columns else False
+                    reference_price = float(op.get(symbol, np.nan))
+                    suspended_flag = (
+                        bool(pd.to_numeric(suspended.loc[dt, symbol], errors="coerce"))
+                        if symbol in suspended.columns
+                        else False
+                    )
                     if side == "sell":
-                        can_trade, reason = _can_sell(price, float(down_limit.loc[dt, symbol]) if symbol in down_limit.columns else np.nan, suspended_flag)
+                        can_trade, reason = _can_sell(
+                            reference_price,
+                            float(down_limit.loc[dt, symbol])
+                            if symbol in down_limit.columns
+                            else np.nan,
+                            suspended_flag,
+                        )
+                        price = reference_price * (1.0 - config.slippage)
                     else:
-                        can_trade, reason = _can_buy(price, float(up_limit.loc[dt, symbol]) if symbol in up_limit.columns else np.nan, suspended_flag)
+                        can_trade, reason = _can_buy(
+                            reference_price,
+                            float(up_limit.loc[dt, symbol])
+                            if symbol in up_limit.columns
+                            else np.nan,
+                            suspended_flag,
+                        )
+                        price = reference_price * (1.0 + config.slippage)
                     current_shares = int(shares.loc[symbol])
-                    target_shares = int((target_value.loc[symbol] // (price * config.lot_size)) * config.lot_size) if math.isfinite(price) and price > 0 else current_shares
+                    target_shares = (
+                        int(
+                            (target_value.loc[symbol] // (price * config.lot_size))
+                            * config.lot_size
+                        )
+                        if math.isfinite(price) and price > 0
+                        else current_shares
+                    )
                     delta = target_shares - current_shares
                     if side == "sell" and delta < 0:
                         if not can_trade:
-                            day_trades.append({"instrument": symbol, "symbol": symbol, "amount": 0, "price": price, "commission": 0.0, "reason": reason})
+                            day_trades.append(
+                                {
+                                    "instrument": symbol,
+                                    "symbol": symbol,
+                                    "amount": 0,
+                                    "price": price,
+                                    "commission": 0.0,
+                                    "reason": reason,
+                                }
+                            )
                             continue
                         fee = max(abs(delta) * price * config.sell_cost, config.min_cost)
                         notional = abs(delta) * price
@@ -149,6 +197,8 @@ def run_local_backtest(
                         shares.loc[symbol] += delta
                         sell_value += notional
                         commission += fee
+                        trade_slippage = abs(delta) * (reference_price - price)
+                        slippage_cost += trade_slippage
                         row = {
                             "date": day,
                             "strategy": strategy_name,
@@ -158,6 +208,8 @@ def run_local_backtest(
                             "amount": int(delta),
                             "shares": int(delta),
                             "price": price,
+                            "reference_price": reference_price,
+                            "slippage_cost": trade_slippage,
                             "commission": fee,
                             "transaction_money": notional,
                             "realized_pnl": np.nan,
@@ -166,14 +218,30 @@ def run_local_backtest(
                         day_trades.append(row)
                     elif side == "buy" and delta > 0:
                         if not can_trade:
-                            day_trades.append({"instrument": symbol, "symbol": symbol, "amount": 0, "price": price, "commission": 0.0, "reason": reason})
+                            day_trades.append(
+                                {
+                                    "instrument": symbol,
+                                    "symbol": symbol,
+                                    "amount": 0,
+                                    "price": price,
+                                    "commission": 0.0,
+                                    "reason": reason,
+                                }
+                            )
                             continue
                         fee = max(delta * price * config.buy_cost, config.min_cost)
                         cost = delta * price + fee
                         if cost > cash:
-                            affordable = int(max(0.0, (cash - config.min_cost)) // (price * config.lot_size)) * config.lot_size
+                            affordable = (
+                                int(max(0.0, (cash - config.min_cost)) // (price * config.lot_size))
+                                * config.lot_size
+                            )
                             delta = max(0, min(delta, affordable))
-                            fee = max(delta * price * config.buy_cost, config.min_cost) if delta > 0 else 0.0
+                            fee = (
+                                max(delta * price * config.buy_cost, config.min_cost)
+                                if delta > 0
+                                else 0.0
+                            )
                             cost = delta * price + fee
                         if delta > 0 and cost <= cash:
                             notional = delta * price
@@ -181,6 +249,8 @@ def run_local_backtest(
                             shares.loc[symbol] += delta
                             buy_value += notional
                             commission += fee
+                            trade_slippage = delta * (price - reference_price)
+                            slippage_cost += trade_slippage
                             row = {
                                 "date": day,
                                 "strategy": strategy_name,
@@ -190,6 +260,8 @@ def run_local_backtest(
                                 "amount": int(delta),
                                 "shares": int(delta),
                                 "price": price,
+                                "reference_price": reference_price,
+                                "slippage_cost": trade_slippage,
                                 "commission": fee,
                                 "transaction_money": notional,
                                 "realized_pnl": np.nan,
@@ -198,23 +270,24 @@ def run_local_backtest(
                             day_trades.append(row)
             pending = None
 
-        equity_close = cash + float((shares * cl).sum())
-        gross = float((shares * cl).sum() / equity_close) if equity_close > 0 else 0.0
+        equity_close = cash + float((shares * mark_prices).sum())
+        gross = float((shares * mark_prices).sum() / equity_close) if equity_close > 0 else 0.0
         raw_rows.append(
             {
                 "date": day,
                 "portfolio_value": equity_close,
                 "ending_cash": cash,
-                "long_value": float((shares * cl).sum()),
+                "long_value": float((shares * mark_prices).sum()),
                 "gross_leverage": gross,
                 "returns": equity_close / prev_equity - 1.0 if prev_equity > 0 else 0.0,
                 "benchmark_returns": 0.0,
                 "benchmark_period_return": 0.0,
                 "algorithm_period_return": equity_close / config.initial_cash - 1.0,
                 "commission": commission,
+                "slippage_cost": slippage_cost,
                 "today_sum_buy_value": buy_value,
                 "today_sum_sell_value": sell_value,
-                "positions": _serialize_positions(shares, cl, equity_close),
+                "positions": _serialize_positions(shares, mark_prices, equity_close),
                 "transactions": day_trades,
             }
         )
@@ -224,7 +297,11 @@ def run_local_backtest(
 
     raw_perf = pd.DataFrame(raw_rows)
     trades = pd.DataFrame(trade_rows)
-    equity = raw_perf.set_index("date")["portfolio_value"] if not raw_perf.empty else pd.Series(dtype=float)
+    equity = (
+        raw_perf.set_index("date")["portfolio_value"]
+        if not raw_perf.empty
+        else pd.Series(dtype=float)
+    )
     summary = perf_summary(equity, config.initial_cash)
     summary.update(
         {
@@ -232,9 +309,21 @@ def run_local_backtest(
             "strategy": strategy_name,
             "trade_count": int(len(trades)),
             "total_fees": float(trades["commission"].sum()) if not trades.empty else 0.0,
-            "active_day_ratio": float((raw_perf["gross_leverage"] > 0).mean()) if not raw_perf.empty else 0.0,
-            "avg_gross_leverage": float(raw_perf["gross_leverage"].mean()) if not raw_perf.empty else 0.0,
-            "turnover_on_initial_cash": float((raw_perf["today_sum_buy_value"].sum() + raw_perf["today_sum_sell_value"].sum()) / config.initial_cash) if not raw_perf.empty else 0.0,
+            "total_slippage_cost": float(trades["slippage_cost"].sum())
+            if not trades.empty
+            else 0.0,
+            "active_day_ratio": float((raw_perf["gross_leverage"] > 0).mean())
+            if not raw_perf.empty
+            else 0.0,
+            "avg_gross_leverage": float(raw_perf["gross_leverage"].mean())
+            if not raw_perf.empty
+            else 0.0,
+            "turnover_on_initial_cash": float(
+                (raw_perf["today_sum_buy_value"].sum() + raw_perf["today_sum_sell_value"].sum())
+                / config.initial_cash
+            )
+            if not raw_perf.empty
+            else 0.0,
             "config": asdict(config),
         }
     )

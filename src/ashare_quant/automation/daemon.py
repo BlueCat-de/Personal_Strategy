@@ -17,14 +17,15 @@ from pathlib import Path
 
 import pandas as pd
 
+from ashare_quant.paths import DEFAULT_MARKET_DATA_DIR, PROJECT_ROOT
 
-REPO_ROOT = Path(__file__).resolve().parent
+REPO_ROOT = PROJECT_ROOT
 DEFAULT_CONDA = Path("/opt/homebrew/Caskroom/miniforge/base/bin/conda")
 DEFAULT_WEBHOOK_FILE = REPO_ROOT / ".feishu_webhook"
 DEFAULT_STATE_FILE = REPO_ROOT / "run/tushare_daily_daemon_state.json"
 DEFAULT_PID_FILE = REPO_ROOT / "run/tushare_daily_daemon.pid"
 DEFAULT_LOG_DIR = REPO_ROOT / "logs/tushare_daily"
-DEFAULT_DATA_DIR = REPO_ROOT / "data/offline/a_share_history_tushare"
+DEFAULT_DATA_DIR = DEFAULT_MARKET_DATA_DIR
 DEFAULT_STRATEGY_OUTPUT_ROOT = REPO_ROOT / "data/backtests/daily_local_strategy_signals"
 LOCAL_TZ = timezone(timedelta(hours=8), "Asia/Shanghai")
 
@@ -77,7 +78,9 @@ def load_webhooks(path: Path) -> list[str]:
     if not path.exists():
         return []
     text = path.read_text(encoding="utf-8")
-    urls = re.findall(r"https://open\.(?:feishu\.cn|larkoffice\.com)/open-apis/bot/v2/hook/[A-Za-z0-9_-]+", text)
+    urls = re.findall(
+        r"https://open\.(?:feishu\.cn|larkoffice\.com)/open-apis/bot/v2/hook/[A-Za-z0-9_-]+", text
+    )
     return sorted(set(urls))
 
 
@@ -86,9 +89,13 @@ def send_feishu(webhook_file: Path, content: str) -> None:
     if not urls:
         print(f"{now_text()} WARNING no Feishu webhook configured: {webhook_file}", flush=True)
         return
-    payload = json.dumps({"msg_type": "text", "content": {"text": content}}, ensure_ascii=False).encode("utf-8")
+    payload = json.dumps(
+        {"msg_type": "text", "content": {"text": content}}, ensure_ascii=False
+    ).encode("utf-8")
     for url in urls:
-        request = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+        request = urllib.request.Request(
+            url, data=payload, headers={"Content-Type": "application/json"}, method="POST"
+        )
         try:
             with urllib.request.urlopen(request, timeout=10) as response:
                 _ = response.read()
@@ -217,15 +224,14 @@ def due(time_text: str) -> bool:
 
 def should_run_data_update(state: dict, today: str) -> bool:
     retry_after = float(state.get("next_data_retry_after", 0.0) or 0.0)
-    if (
-        state.get("data_last_result_date") == today
-        and state.get("data_last_status") == "skipped"
-        and state.get("latest_tushare_data_date") != today
-        and time.time() >= retry_after
-    ):
-        return True
+    if state.get("data_last_result_date") == today and state.get("data_last_status") in {
+        "updated",
+        "skipped",
+    }:
+        return False
     return state.get("data_last_result_date") != today or (
-        state.get("data_last_status") in {"failed", "upstream_not_ready"} and time.time() >= retry_after
+        state.get("data_last_status") in {"failed", "upstream_not_ready"}
+        and time.time() >= retry_after
     )
 
 
@@ -234,10 +240,32 @@ def should_run_strategy(state: dict, latest_data_date: str | None, today: str) -
     return bool(data_ready and state.get("strategy_success_data_date") != latest_data_date)
 
 
-def build_python_command(args: argparse.Namespace, script: str, extra_args: list[str]) -> list[str]:
+def build_python_command(args: argparse.Namespace, module: str, extra_args: list[str]) -> list[str]:
     if args.python:
-        return [args.python, "-u", script, *extra_args]
-    return [str(Path(args.conda)), "run", "-n", args.conda_env, "python", "-u", script, *extra_args]
+        return [args.python, "-u", "-m", module, *extra_args]
+    return [
+        str(Path(args.conda)),
+        "run",
+        "-n",
+        args.conda_env,
+        "python",
+        "-u",
+        "-m",
+        module,
+        *extra_args,
+    ]
+
+
+def load_update_summary(data_dir: Path) -> dict:
+    for name in [
+        "point_in_time_rebuild_summary.json",
+        "hybrid_update_summary.json",
+        "daily_update_summary.json",
+    ]:
+        summary = load_json(data_dir / name, {})
+        if summary:
+            return summary
+    return {}
 
 
 def run_data_update(args: argparse.Namespace, state: dict) -> dict:
@@ -249,35 +277,53 @@ def run_data_update(args: argparse.Namespace, state: dict) -> dict:
     save_json(Path(args.state_file), state)
     command = build_python_command(
         args,
-        args.update_script,
+        args.update_module,
         ["--end-date", today, "--output-dir", args.data_dir, "--env-file", args.env_file],
     )
     code, _ = run_command(command, REPO_ROOT, log_path)
-    summary_path = Path(args.data_dir) / "daily_update_summary.json"
-    summary = load_json(summary_path, {})
-    latest = summary.get("latest_local_date") or summary.get("latest_tushare_date") or read_data_latest(Path(args.data_dir))
+    summary = load_update_summary(Path(args.data_dir))
+    latest = (
+        summary.get("latest_local_date")
+        or read_data_latest(Path(args.data_dir))
+        or summary.get("latest_tushare_date")
+    )
     if code == 0 and summary.get("status") in {"updated", "skipped"}:
         latest_tushare_date = summary.get("latest_tushare_date")
-        upstream_not_ready = summary.get("status") == "skipped" and latest_tushare_date and latest_tushare_date < today
+        upstream_not_ready = (
+            summary.get("status") == "skipped"
+            and latest_tushare_date
+            and latest_tushare_date < today
+        )
         state["data_finished_at"] = now_text()
-        state["latest_tushare_data_date"] = latest
+        state["latest_tushare_data_date"] = latest_tushare_date or latest
+        state["latest_local_data_date"] = latest
         if upstream_not_ready:
+            state["data_last_result_date"] = today
             state["data_last_status"] = "upstream_not_ready"
             state["next_data_retry_after"] = time.time() + args.retry_seconds
             save_json(Path(args.state_file), state)
-            send_feishu(Path(args.webhook_file), f"Tushare 数据每日取数：等待上游更新\n运行时间：{now_text()}\n请求日期：{today}\nTushare 最新交易日：{latest_tushare_date}\n本地数据截止：{latest}")
+            send_feishu(
+                Path(args.webhook_file),
+                f"Tushare 数据每日取数：等待上游更新\n运行时间：{now_text()}\n请求日期：{today}\nTushare 最新交易日：{latest_tushare_date}\n本地数据截止：{latest}",
+            )
             return summary
         state["data_last_result_date"] = today
         state["data_last_status"] = summary.get("status")
         state.pop("next_data_retry_after", None)
         save_json(Path(args.state_file), state)
-        send_feishu(Path(args.webhook_file), f"Tushare 数据每日取数：成功\n运行时间：{now_text()}\n请求日期：{today}\nTushare 最新交易日：{summary.get('latest_tushare_date')}\n本地数据截止：{latest}\n状态：{summary.get('status')}")
+        send_feishu(
+            Path(args.webhook_file),
+            f"Tushare 数据每日取数：成功\n运行时间：{now_text()}\n请求日期：{today}\nTushare 最新交易日：{summary.get('latest_tushare_date')}\n本地数据截止：{latest}\n状态：{summary.get('status')}",
+        )
         return summary
     state["data_last_result_date"] = today
     state["data_last_status"] = "failed"
     state["next_data_retry_after"] = time.time() + args.retry_seconds
     save_json(Path(args.state_file), state)
-    send_feishu(Path(args.webhook_file), f"Tushare 数据每日取数：失败\n运行时间：{now_text()}\n请求日期：{today}\n输出目录：{args.data_dir}")
+    send_feishu(
+        Path(args.webhook_file),
+        f"Tushare 数据每日取数：失败\n运行时间：{now_text()}\n请求日期：{today}\n输出目录：{args.data_dir}",
+    )
     return summary
 
 
@@ -292,7 +338,7 @@ def run_strategy(args: argparse.Namespace, state: dict, latest_data_date: str) -
     save_json(Path(args.state_file), state)
     command = build_python_command(
         args,
-        "local_strategy.py",
+        "ashare_quant.strategies.v4",
         [
             "--strategy-version",
             args.strategy_version,
@@ -338,13 +384,22 @@ def run_strategy(args: argparse.Namespace, state: dict, latest_data_date: str) -
     state["strategy_last_status"] = "failed"
     state["strategy_finished_at"] = now_text()
     save_json(Path(args.state_file), state)
-    send_feishu(Path(args.webhook_file), f"Tushare 本地策略：失败\n运行时间：{now_text()}\n数据日期：{latest_data_date}\n输出目录：{output_dir}")
+    send_feishu(
+        Path(args.webhook_file),
+        f"Tushare 本地策略：失败\n运行时间：{now_text()}\n数据日期：{latest_data_date}\n输出目录：{output_dir}",
+    )
     return result
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run daily Tushare update and local strategy notifications.")
-    parser.add_argument("--python", default=os.environ.get("LOCAL_PYTHON", ""), help="Python executable to run child jobs directly. If set, --conda/--conda-env are ignored.")
+    parser = argparse.ArgumentParser(
+        description="Run daily Tushare update and local strategy notifications."
+    )
+    parser.add_argument(
+        "--python",
+        default=os.environ.get("LOCAL_PYTHON", ""),
+        help="Python executable to run child jobs directly. If set, --conda/--conda-env are ignored.",
+    )
     parser.add_argument("--conda", default=str(DEFAULT_CONDA))
     parser.add_argument("--conda-env", default=os.environ.get("LOCAL_CONDA_ENV", "strategy"))
     parser.add_argument("--env-file", default=str(REPO_ROOT / ".env.local"))
@@ -353,7 +408,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pid-file", default=str(DEFAULT_PID_FILE))
     parser.add_argument("--log-dir", default=str(DEFAULT_LOG_DIR))
     parser.add_argument("--data-dir", default=str(DEFAULT_DATA_DIR))
-    parser.add_argument("--update-script", default="update_offline_a_share_history_tushare_daily.py")
+    parser.add_argument("--update-module", default="ashare_quant.data.pit")
     parser.add_argument("--strategy-output-root", default=str(DEFAULT_STRATEGY_OUTPUT_ROOT))
     parser.add_argument("--data-time", default="21:10")
     parser.add_argument("--strategy-time", default="21:30")
@@ -373,7 +428,7 @@ def main() -> None:
     acquire_pid_file(pid_file)
     stop = {"value": False}
 
-    def handle_signal(signum, _frame) -> None:
+    def handle_signal(signum, _) -> None:
         stop["value"] = True
         print(f"{now_text()} INFO received signal {signum}, stopping daemon", flush=True)
 
@@ -396,7 +451,11 @@ def main() -> None:
                 run_data_update(args, state)
                 state = load_json(state_file, state)
             latest_data_date = read_data_latest(Path(args.data_dir))
-            if due(args.strategy_time) and latest_data_date and should_run_strategy(state, latest_data_date, today):
+            if (
+                due(args.strategy_time)
+                and latest_data_date
+                and should_run_strategy(state, latest_data_date, today)
+            ):
                 run_strategy(args, state, latest_data_date)
             time.sleep(args.interval_seconds)
     finally:
