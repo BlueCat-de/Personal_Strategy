@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ashare-quant"
+version = "0.1.0"
+description = "Point-in-time A-share quantitative research and backtesting toolkit"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "BlueCat-de" }]
+keywords = ["quantitative-finance", "a-share", "backtesting", "tushare", "factor-investing"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Financial and Insurance Industry",
+  "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Office/Business :: Financial :: Investment",
+]
+dependencies = [
+  "numpy>=1.24",
+  "pandas>=2.0",
+  "tabulate>=0.9",
+  "tushare>=1.2.89",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "ruff>=0.6",
+]
+
+[project.urls]
+Homepage = "https://github.com/BlueCat-de/Personal_Strategy"
+Repository = "https://github.com/BlueCat-de/Personal_Strategy"
+Issues = "https://github.com/BlueCat-de/Personal_Strategy/issues"
+
+[project.scripts]
+ashare-v4 = "ashare_quant.strategies.v4:main"
+ashare-stable = "ashare_quant.strategies.stable:main"
+ashare-rebuild-data = "ashare_quant.data.pit:main"
+ashare-fetch-industries = "ashare_quant.data.industries:main"
+ashare-stability = "ashare_quant.research.stability:main"
+ashare-daemon = "ashare_quant.automation.daemon:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

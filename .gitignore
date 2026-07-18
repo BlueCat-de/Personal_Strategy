@@ -1,16 +1,31 @@
-# Python / virtual environments
+# Python
 __pycache__/
 *.py[cod]
 *.pyo
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+build/
+dist/
+*.egg-info/
+
+# Virtual environments
 .venv/
 venv/
 env/
 
-# OS / editor files
+# OS / editors
 .DS_Store
+Thumbs.db
 .idea/
 .vscode/
 .trae/
+
 # Local secrets
 .env
 .env.*
@@ -18,11 +33,12 @@ env/
 .feishu_webhook
 !.feishu_webhook.example
 
-# Runtime outputs
+# Data and runtime outputs
 data/
 logs/
 run/
 .crawler_state/
+*.log
 
-# Local private strategy experiments.
-strategies/
+# Notebooks
+.ipynb_checkpoints/

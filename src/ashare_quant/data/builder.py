@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from tushare_provider import (
+from ashare_quant.data.tushare import (
     DEFAULT_ENV_FILE,
     fetch_adj_factor,
     fetch_daily,
