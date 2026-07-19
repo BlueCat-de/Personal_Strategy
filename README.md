@@ -7,7 +7,8 @@ Point-in-time A-share data engineering, factor research, realistic backtesting,
 and daily signal automation.
 
 [中文文档](docs/README_zh-CN.md) | [Architecture](docs/ARCHITECTURE.md) |
-[Python API](docs/API.md) | [Contributing](CONTRIBUTING.md)
+[Python API](docs/API.md) | [策略资产登记册](docs/STRATEGY_ASSETS_zh-CN.md) |
+[Contributing](CONTRIBUTING.md)
 
 > This project is for research and education. It does not provide investment
 > advice, guarantee returns, or place live orders.
@@ -42,7 +43,8 @@ runtime logs, and backtest outputs.
 │   ├── automation/       # Daily scheduler and Feishu/Lark notifications
 │   ├── data/             # Tushare adapter, PIT builder, industry history
 │   ├── research/         # Factor panels and stability experiments
-│   ├── strategies/       # v4 and stable stock-only strategies
+│   ├── strategies/       # v4, experimental, and forward-validation strategies
+│   ├── visualization/    # matplotlib research charts
 │   ├── backtest.py       # Next-open execution engine
 │   ├── benchmark.py      # CSI 300 retrieval and relative metrics
 │   └── paths.py          # Repository-local paths
@@ -160,7 +162,55 @@ ashare-stable \
 This strategy uses only individual A-share stocks and cash. It does not use
 ETFs, index weights, futures, options, or other derivatives.
 
-### 5. Run robustness research
+### 5. Run the experimental breadth-adaptive strategy
+
+```bash
+ashare-adaptive \
+  --start-date 2021-07-01 \
+  --warmup-start-date 2020-01-02 \
+  --end-date 2026-07-16 \
+  --initial-cash 45000 \
+  --slippage 0.001 \
+  --output-dir data/backtests/adaptive_stock_alpha
+```
+
+The research baseline rebalances every second month. When the
+point-in-time 120-day market breadth is at least 76%, it selects 12 large-cap
+low-volatility value stocks. Otherwise, it selects eight industry-neutral
+relative-strength stocks, with at most 20% of holdings from one industry.
+
+After the full point-in-time audit, this baseline beats the CSI 300 in five of
+six reported periods and is not production eligible. The earlier 6/6 result
+has been invalidated because its breadth denominator was not strictly PIT.
+
+### 6. Run the offset-neutral stock strategy
+
+```bash
+ashare-offset-neutral \
+  --initial-cash 100000 \
+  --slippage 0.001 \
+  --output-dir data/backtests/offset_neutral_stock_alpha
+```
+
+This stock-only candidate combines monthly large-cap defensive selection,
+low-turnover small caps, and two staggered adaptive sleeves. It passes all six
+historical annual excess-return periods after the PIT audit, but remains frozen
+for forward validation rather than production approved. `--initial-cash` supports
+capital from CNY 50,000; CNY 200,000 remains the recommended starting capital
+because integer-lot constraints are lower.
+
+### 7. Plot capital-sensitive backtest curves
+
+```bash
+ashare-plot-capital-curves \
+  --input-dir data/backtests/offset_neutral_capital_sensitivity_20210701_20260716 \
+  --output-dir data/backtests/offset_neutral_capital_sensitivity_20210701_20260716/charts
+```
+
+This uses `matplotlib` to generate PNG and PDF normalized-NAV and cumulative-return
+charts for 50k, 100k, 500k, and 1m strategy capital alongside the CSI 300 benchmark.
+
+### 8. Run robustness research
 
 ```bash
 ashare-stability \
@@ -172,8 +222,8 @@ ashare-stability \
 
 The experiment covers factor-weight neighborhoods, 8/10/12 holdings,
 monthly/bimonthly rebalancing, market-cap and industry cross-sections, and
-5/10/20/50 bp slippage. Current research does **not** establish a strategy
-that beats the CSI 300 in every reported year.
+5/10/20/50 bp slippage. Historical results are research evidence rather than
+a guarantee of future excess returns.
 
 ## Daily Deployment
 

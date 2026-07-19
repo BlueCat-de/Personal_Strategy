@@ -36,6 +36,8 @@ execution or backtesting service.
 
 - `v4`: weekly high-conviction defensive strategy with daily exits.
 - `stable`: diversified stock-only low-volatility/value strategy.
+- `adaptive_alpha`: experimental breadth-adaptive research baseline.
+- `offset_neutral_alpha`: frozen multi-sleeve stock-only candidate for forward validation.
 
 Strategies produce target weights. They do not submit broker orders.
 
@@ -56,8 +58,13 @@ The execution engine applies:
 
 - `factors`: monthly PIT factor panels and IC utilities.
 - `stability`: parameter, cross-section, and slippage experiments.
+- `relative_strength`: historical industry and stock relative-strength features.
 
 Research modules may be slower and generate large local outputs under `data/`.
+
+### `ashare_quant.visualization`
+
+- `capital_curves`: matplotlib-based capital-sensitivity curve generation.
 
 ### `ashare_quant.automation`
 
@@ -104,6 +111,14 @@ run/        PID and scheduler state
 .env.local  Tushare token
 .feishu_webhook
 ```
+
+## Strategy Asset Boundary
+
+The versioned strategy asset consists of source code, immutable configuration,
+tests, execution assumptions, research status, and methodology documentation.
+It does not include vendor market data, local caches, credentials, generated
+orders, or backtest output. The strategy register and forward-validation
+requirements are documented in [策略资产登记册](STRATEGY_ASSETS_zh-CN.md).
 
 ## Extension Points
 

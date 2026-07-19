@@ -149,7 +149,53 @@ ashare-stable \
 
 该策略仅持有A股个股和现金，不使用ETF、指数权重、期货、期权或其他衍生品。
 
-### 5. 运行稳定性实验
+### 5. 运行实验性广度自适应策略
+
+```bash
+ashare-adaptive \
+  --start-date 2021-07-01 \
+  --warmup-start-date 2020-01-02 \
+  --end-date 2026-07-16 \
+  --initial-cash 45000 \
+  --slippage 0.001 \
+  --output-dir data/backtests/adaptive_stock_alpha
+```
+
+研究基线每两个月调仓一次。信号日全市场120日上涨广度不低于76%时，
+选择12只大盘低波价值股票；否则选择8只行业中性的相对强弱股票，
+且单一行业最多占持仓数量的20%。
+
+该策略在完整PIT审计后仅达到5/6年度超额，当前不具备生产资格。此前6/6结果
+已经作废，原因、修复内容和前向OOS协议见
+[广度自适应策略验证状态](STRATEGY_VALIDATION_zh-CN.md)。
+
+### 6. 运行调仓起点中性策略
+
+```bash
+ashare-offset-neutral \
+  --initial-cash 100000 \
+  --slippage 0.001 \
+  --output-dir data/backtests/offset_neutral_stock_alpha
+```
+
+该纯股票候选使用月频大盘防守、小盘低换手和双起点自适应三个袖套。完整PIT
+回测实现了6/6年度超额，但仍处于冻结后的前向验证阶段。`--initial-cash`支持5万元
+及以上，20万元为建议资金。策略逻辑、成本压力和资金约束见
+[调仓起点中性纯股票策略](OFFSET_NEUTRAL_STRATEGY_zh-CN.md)。版本控制边界、
+策略状态和前向验证要求见[策略资产登记册](STRATEGY_ASSETS_zh-CN.md)。
+
+### 7. 绘制不同本金回测曲线
+
+```bash
+ashare-plot-capital-curves \
+  --input-dir data/backtests/offset_neutral_capital_sensitivity_20210701_20260716 \
+  --output-dir data/backtests/offset_neutral_capital_sensitivity_20210701_20260716/charts
+```
+
+该命令使用`matplotlib`输出5万、10万、50万、100万策略资金的归一化净值曲线和
+累计收益曲线，并与沪深300对比，生成PNG和PDF文件。
+
+### 8. 运行稳定性实验
 
 ```bash
 ashare-stability \
