@@ -98,7 +98,13 @@ def _retry_call(func, *, retries: int = 3, sleep_seconds: float = 0.8) -> pd.Dat
             last_error = error
             if attempt < retries - 1:
                 delay = sleep_seconds * (attempt + 1)
-                LOGGER.warning("Tushare request failed (%s/%s): %s; retry in %.1fs", attempt + 1, retries, type(error).__name__, delay)
+                LOGGER.warning(
+                    "Tushare request failed (%s/%s): %s; retry in %.1fs",
+                    attempt + 1,
+                    retries,
+                    type(error).__name__,
+                    delay,
+                )
                 time.sleep(delay)
                 continue
             raise
@@ -122,7 +128,9 @@ def fetch_stock_basic_all(env_file: Path = DEFAULT_ENV_FILE) -> pd.DataFrame:
     fields = "ts_code,symbol,name,area,industry,market,list_date,delist_date,exchange"
     frames: list[pd.DataFrame] = []
     for status in ["L", "D", "P"]:
-        frame = _retry_call(lambda status=status: pro.stock_basic(exchange="", list_status=status, fields=fields))
+        frame = _retry_call(
+            lambda status=status: pro.stock_basic(exchange="", list_status=status, fields=fields)
+        )
         if frame.empty:
             continue
         frame["list_status"] = status
@@ -134,7 +142,9 @@ def fetch_stock_basic_all(env_file: Path = DEFAULT_ENV_FILE) -> pd.DataFrame:
     return result.sort_values("ts_code").reset_index(drop=True)
 
 
-def fetch_namechange(start_date: str, end_date: str, env_file: Path = DEFAULT_ENV_FILE) -> pd.DataFrame:
+def fetch_namechange(
+    start_date: str, end_date: str, env_file: Path = DEFAULT_ENV_FILE
+) -> pd.DataFrame:
     pro = get_pro_client(env_file)
     fields = "ts_code,name,start_date,end_date,change_reason"
     frame = _retry_call(
@@ -146,12 +156,16 @@ def fetch_namechange(start_date: str, end_date: str, env_file: Path = DEFAULT_EN
     )
     if frame.empty:
         return pd.DataFrame(columns=fields.split(","))
-    frame["start_date"] = pd.to_datetime(frame["start_date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    frame["start_date"] = pd.to_datetime(frame["start_date"], errors="coerce").dt.strftime(
+        "%Y-%m-%d"
+    )
     frame["end_date"] = pd.to_datetime(frame["end_date"], errors="coerce").dt.strftime("%Y-%m-%d")
     return frame.sort_values(["ts_code", "start_date"]).reset_index(drop=True)
 
 
-def fetch_trade_calendar(start_date: str, end_date: str, env_file: Path = DEFAULT_ENV_FILE) -> pd.DataFrame:
+def fetch_trade_calendar(
+    start_date: str, end_date: str, env_file: Path = DEFAULT_ENV_FILE
+) -> pd.DataFrame:
     pro = get_pro_client(env_file)
     frame = _retry_call(
         lambda: pro.trade_cal(
@@ -167,7 +181,9 @@ def fetch_trade_calendar(start_date: str, end_date: str, env_file: Path = DEFAUL
     return frame.sort_values("cal_date").reset_index(drop=True)
 
 
-def latest_open_trade_date(end_date: str, env_file: Path = DEFAULT_ENV_FILE, lookback_days: int = 20) -> str | None:
+def latest_open_trade_date(
+    end_date: str, env_file: Path = DEFAULT_ENV_FILE, lookback_days: int = 20
+) -> str | None:
     start = pd.to_datetime(end_date) - pd.Timedelta(days=lookback_days)
     cal = fetch_trade_calendar(start.strftime("%Y-%m-%d"), end_date, env_file)
     if cal.empty:
@@ -214,6 +230,30 @@ def fetch_daily_basic(trade_date: str, env_file: Path = DEFAULT_ENV_FILE) -> pd.
         return frame
     frame["trade_date"] = pd.to_datetime(frame["trade_date"]).dt.strftime("%Y-%m-%d")
     return frame
+
+
+def fetch_fina_indicator(
+    ts_code: str,
+    start_date: str,
+    end_date: str,
+    env_file: Path = DEFAULT_ENV_FILE,
+) -> pd.DataFrame:
+    pro = get_pro_client(env_file)
+    fields = (
+        "ts_code,ann_date,end_date,roe,roe_waa,roa,roic,grossprofit_margin,"
+        "netprofit_margin,debt_to_assets,assets_turn,ocf_to_debt,q_ocf_to_sales,"
+        "q_sales_yoy,q_op_qoq,dt_netprofit_yoy,ocf_yoy,equity_yoy"
+    )
+    return _retry_call(
+        lambda: pro.fina_indicator(
+            ts_code=ts_code,
+            start_date=pd.to_datetime(start_date).strftime("%Y%m%d"),
+            end_date=pd.to_datetime(end_date).strftime("%Y%m%d"),
+            fields=fields,
+        ),
+        retries=5,
+        sleep_seconds=15.0,
+    )
 
 
 def fetch_suspend(trade_date: str, env_file: Path = DEFAULT_ENV_FILE) -> pd.DataFrame:

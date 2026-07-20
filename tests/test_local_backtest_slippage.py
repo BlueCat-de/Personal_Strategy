@@ -76,6 +76,92 @@ class SlippageBacktestTest(unittest.TestCase):
                 strategy_name="invalid",
             )
 
+    def test_rebalance_sizing_does_not_use_same_day_close(self) -> None:
+        dates = pd.to_datetime(["2026-01-05", "2026-01-06", "2026-01-07"])
+        columns = ["A"]
+        prices = {
+            "raw_open": pd.DataFrame([[10.0], [10.0], [10.0]], index=dates, columns=columns),
+            "raw_close": pd.DataFrame([[10.0], [10.0], [100.0]], index=dates, columns=columns),
+            "open": pd.DataFrame([[10.0], [10.0], [10.0]], index=dates, columns=columns),
+            "close": pd.DataFrame([[10.0], [10.0], [100.0]], index=dates, columns=columns),
+        }
+        targets = {
+            dates[0]: pd.Series([1.0], index=columns),
+            dates[1]: pd.Series([0.5], index=columns),
+        }
+
+        result = run_local_backtest(
+            prices,
+            targets,
+            BacktestConfig(
+                initial_cash=10_000.0,
+                buy_cost=0.0,
+                sell_cost=0.0,
+                min_cost=0.0,
+            ),
+            strategy_name="no_close_leakage",
+        )
+
+        day_three = result.trades[result.trades["date"] == "2026-01-07"]
+        self.assertEqual(day_three.iloc[0]["side"], "sell")
+        self.assertEqual(day_three.iloc[0]["amount"], -500)
+
+    def test_adjustment_factor_preserves_wealth_across_ex_date(self) -> None:
+        dates = pd.to_datetime(["2026-01-05", "2026-01-06", "2026-01-07", "2026-01-08"])
+        columns = ["A"]
+        raw = pd.DataFrame([[10.0], [10.0], [5.0], [5.0]], index=dates, columns=columns)
+        prices = {
+            "raw_open": raw.copy(),
+            "raw_close": raw.copy(),
+            "open": pd.DataFrame([[10.0], [10.0], [10.0], [10.0]], index=dates, columns=columns),
+            "close": pd.DataFrame([[10.0], [10.0], [10.0], [10.0]], index=dates, columns=columns),
+            "adj_factor": pd.DataFrame([[1.0], [1.0], [2.0], [2.0]], index=dates, columns=columns),
+        }
+        targets = {dates[0]: pd.Series([1.0], index=columns)}
+
+        result = run_local_backtest(
+            prices,
+            targets,
+            BacktestConfig(
+                initial_cash=10_000.0,
+                buy_cost=0.0,
+                sell_cost=0.0,
+                min_cost=0.0,
+            ),
+            strategy_name="corporate_action",
+        )
+
+        ex_date = result.raw_perf[result.raw_perf["date"] == "2026-01-07"].iloc[0]
+        self.assertAlmostEqual(ex_date["portfolio_value"], 10_000.0)
+        self.assertAlmostEqual(ex_date["corporate_action_adjustment"], 5_000.0)
+
+    def test_close_marks_are_updated_every_day(self) -> None:
+        dates = pd.to_datetime(["2026-01-05", "2026-01-06", "2026-01-07"])
+        columns = ["A"]
+        prices = {
+            "raw_open": pd.DataFrame([[10.0], [10.0], [11.0]], index=dates, columns=columns),
+            "raw_close": pd.DataFrame([[10.0], [11.0], [12.0]], index=dates, columns=columns),
+            "open": pd.DataFrame([[10.0], [10.0], [11.0]], index=dates, columns=columns),
+            "close": pd.DataFrame([[10.0], [11.0], [12.0]], index=dates, columns=columns),
+        }
+        targets = {dates[0]: pd.Series([1.0], index=columns)}
+
+        result = run_local_backtest(
+            prices,
+            targets,
+            BacktestConfig(
+                initial_cash=10_000.0,
+                buy_cost=0.0,
+                sell_cost=0.0,
+                min_cost=0.0,
+            ),
+            strategy_name="daily_marks",
+        )
+
+        final = result.raw_perf.iloc[-1]
+        self.assertAlmostEqual(final["portfolio_value"], 12_000.0)
+        self.assertAlmostEqual(final["returns"], 12.0 / 11.0 - 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()

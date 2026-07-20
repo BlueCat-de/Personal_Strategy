@@ -19,6 +19,7 @@ class BacktestConfig:
     min_cost: float = 5.0
     lot_size: int = 100
     benchmark_symbol: str = "000300.SH"
+    account_for_corporate_actions: bool = True
 
 
 @dataclass(frozen=True)
@@ -106,6 +107,9 @@ def run_local_backtest(
         raise ValueError("slippage must be non-negative")
     close = prices.get("raw_close", prices["close"])
     open_ = prices.get("raw_open", prices["open"]).reindex_like(close)
+    adj_factor = prices.get(
+        "adj_factor", pd.DataFrame(1.0, index=close.index, columns=close.columns)
+    ).reindex_like(close)
     up_limit = prices.get(
         "up_limit", pd.DataFrame(index=close.index, columns=close.columns, dtype=float)
     ).reindex_like(close)
@@ -124,14 +128,29 @@ def run_local_backtest(
     trade_rows: list[dict] = []
     prev_equity = config.initial_cash
     mark_prices = close.ffill().iloc[0].reindex(symbols).fillna(0.0)
+    previous_adj_factor = adj_factor.ffill().iloc[0].reindex(symbols).fillna(1.0)
 
     for dt in dates:
         day = dt.strftime("%Y-%m-%d")
         day_trades: list[dict] = []
         op = open_.loc[dt]
         cl = close.loc[dt]
-        mark_prices = mark_prices.where(cl.isna(), cl).fillna(0.0)
-        equity_open = cash + float((shares * mark_prices).sum())
+        opening_shares = shares.copy()
+        opening_prices = op.where(op.notna() & (op > 0), mark_prices).fillna(0.0)
+        current_adj_factor = adj_factor.loc[dt].fillna(previous_adj_factor)
+        adjustment_ratio = (
+            (current_adj_factor / previous_adj_factor.replace(0.0, np.nan))
+            .replace([np.inf, -np.inf], np.nan)
+            .fillna(1.0)
+        )
+        corporate_action_adjustment = 0.0
+        if config.account_for_corporate_actions:
+            corporate_action_adjustment = float(
+                (opening_shares * opening_prices * (adjustment_ratio - 1.0)).sum()
+            )
+            cash += corporate_action_adjustment
+        previous_adj_factor = current_adj_factor
+        equity_open = cash + float((shares * opening_prices).sum())
         buy_value = 0.0
         sell_value = 0.0
         commission = 0.0
@@ -270,6 +289,7 @@ def run_local_backtest(
                             day_trades.append(row)
             pending = None
 
+        mark_prices = mark_prices.where(cl.isna(), cl).fillna(0.0)
         equity_close = cash + float((shares * mark_prices).sum())
         gross = float((shares * mark_prices).sum() / equity_close) if equity_close > 0 else 0.0
         raw_rows.append(
@@ -285,6 +305,7 @@ def run_local_backtest(
                 "algorithm_period_return": equity_close / config.initial_cash - 1.0,
                 "commission": commission,
                 "slippage_cost": slippage_cost,
+                "corporate_action_adjustment": corporate_action_adjustment,
                 "today_sum_buy_value": buy_value,
                 "today_sum_sell_value": sell_value,
                 "positions": _serialize_positions(shares, mark_prices, equity_close),

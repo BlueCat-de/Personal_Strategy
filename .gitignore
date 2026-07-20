@@ -34,7 +34,7 @@ Thumbs.db
 !.feishu_webhook.example
 
 # Data and runtime outputs
-data/
+/data/
 logs/
 run/
 .crawler_state/
