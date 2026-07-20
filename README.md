@@ -111,6 +111,7 @@ Build the full local dataset:
 ashare-rebuild-data \
   --start-date 2020-01-01 \
   --end-date "$(date +%F)" \
+  --board-scope main \
   --output-dir data/offline/a_share_history_tushare
 ```
 
@@ -121,6 +122,43 @@ data/offline/a_share_history_tushare/
 ├── prices_long.csv
 ├── daily_universe.csv
 └── universe.csv
+```
+
+The default `main` scope keeps the existing main-board research dataset
+unchanged. To build the missing ChiNext, STAR Market, and Beijing Stock
+Exchange data, use a separate output directory:
+
+```bash
+ashare-rebuild-data \
+  --start-date 2010-01-01 \
+  --end-date 2026-07-17 \
+  --board-scope growth \
+  --output-dir data/offline/a_share_growth_boards_tushare
+```
+
+This produces an isolated dataset:
+
+```text
+data/offline/a_share_growth_boards_tushare/
+├── prices_long.csv
+├── daily_universe.csv
+└── universe.csv
+```
+
+Backtests keep `--board-scope main` by default. To include the growth-board
+file at runtime without merging files on disk:
+
+```bash
+ashare-financial-quality \
+  --prices-file data/offline/a_share_history_tushare/prices_long.csv \
+  --extra-prices-file data/offline/a_share_growth_boards_tushare/prices_long.csv \
+  --board-scope all \
+  --start-date 2011-01-01 \
+  --warmup-start-date 2010-01-04 \
+  --end-date 2026-07-17 \
+  --initial-cash 100000 \
+  --slippage 0.001 \
+  --output-dir data/backtests/financial_quality_all_boards
 ```
 
 See [Architecture](docs/ARCHITECTURE.md) for the schema and PIT rules.

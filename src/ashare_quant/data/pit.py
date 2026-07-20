@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from ashare_quant.boards import BOARD_SCOPES, normalize_board_scope, symbol_in_board_scope
 from ashare_quant.data.builder import (
     atomic_write_csv,
     atomic_write_text,
@@ -22,9 +23,6 @@ from ashare_quant.data.tushare import (
     DEFAULT_ENV_FILE,
     fetch_namechange,
     fetch_stock_basic_all,
-    is_bse,
-    is_chinext,
-    is_star_market,
     normalize_symbol,
     trading_dates,
 )
@@ -69,6 +67,7 @@ class RebuildConfig:
     cache_dir: Path
     backup: bool
     limit: int | None
+    board_scope: str = "main"
 
 
 def setup_logging(level: str) -> None:
@@ -116,11 +115,8 @@ def load_universe(config: RebuildConfig) -> pd.DataFrame:
     if universe.empty:
         raise RuntimeError("Tushare stock_basic returned no rows")
     universe["symbol"] = universe["symbol"].map(normalize_symbol)
-    universe = universe[
-        ~universe["symbol"].map(is_chinext)
-        & ~universe["symbol"].map(is_star_market)
-        & ~universe["symbol"].map(is_bse)
-    ].copy()
+    board_scope = normalize_board_scope(config.board_scope)
+    universe = universe[universe["symbol"].map(lambda symbol: symbol_in_board_scope(symbol, board_scope))].copy()
     universe["list_date"] = universe["list_date"].map(yyyymmdd_or_none)
     universe["delist_date"] = universe["delist_date"].map(yyyymmdd_or_none)
     universe = (
@@ -318,6 +314,7 @@ def rebuild(config: RebuildConfig) -> dict:
         else 0,
         "backup_dir": backup_dir,
         "columns": PRICE_COLUMNS,
+        "board_scope": normalize_board_scope(config.board_scope),
         "config": {
             **asdict(config),
             "output_dir": str(config.output_dir),
@@ -345,6 +342,15 @@ def parse_args() -> argparse.Namespace:
         help="Per-date Tushare bundle cache. Defaults to output-dir/.tushare_backfill_cache.",
     )
     parser.add_argument("--limit", type=int, help="Limit universe for smoke tests.")
+    parser.add_argument(
+        "--board-scope",
+        default="main",
+        choices=BOARD_SCOPES,
+        help=(
+            "Stock board universe to rebuild. Use 'growth' for ChiNext + STAR + BSE "
+            "in a separate output directory."
+        ),
+    )
     parser.add_argument("--no-backup", action="store_true")
     parser.add_argument(
         "--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"]
@@ -364,6 +370,7 @@ def main() -> None:
         cache_dir=Path(args.cache_dir or output_dir / ".tushare_backfill_cache"),
         backup=not args.no_backup,
         limit=args.limit,
+        board_scope=normalize_board_scope(args.board_scope),
     )
     print(json.dumps(rebuild(config), ensure_ascii=False, indent=2, default=str))
 

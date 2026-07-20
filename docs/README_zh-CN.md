@@ -102,6 +102,7 @@ ashare-rebuild-data \
 ashare-rebuild-data \
   --start-date 2020-01-01 \
   --end-date "$(date +%F)" \
+  --board-scope main \
   --output-dir data/offline/a_share_history_tushare
 ```
 
@@ -112,6 +113,42 @@ data/offline/a_share_history_tushare/
 ├── prices_long.csv
 ├── daily_universe.csv
 └── universe.csv
+```
+
+默认`main`只构建主板数据，保持现有研究数据集不变。若要补齐创业板、科创板和
+北交所，必须写入独立目录，避免污染主板长期研究结果：
+
+```bash
+ashare-rebuild-data \
+  --start-date 2010-01-01 \
+  --end-date 2026-07-17 \
+  --board-scope growth \
+  --output-dir data/offline/a_share_growth_boards_tushare
+```
+
+输出目录为：
+
+```text
+data/offline/a_share_growth_boards_tushare/
+├── prices_long.csv
+├── daily_universe.csv
+└── universe.csv
+```
+
+回测默认仍为`--board-scope main`。如果要在运行时把三板文件纳入候选池，不需要
+把两个CSV合并到同一个文件，可使用：
+
+```bash
+ashare-financial-quality \
+  --prices-file data/offline/a_share_history_tushare/prices_long.csv \
+  --extra-prices-file data/offline/a_share_growth_boards_tushare/prices_long.csv \
+  --board-scope all \
+  --start-date 2011-01-01 \
+  --warmup-start-date 2010-01-04 \
+  --end-date 2026-07-17 \
+  --initial-cash 100000 \
+  --slippage 0.001 \
+  --output-dir data/backtests/financial_quality_all_boards
 ```
 
 ### 2. 获取申万历史行业

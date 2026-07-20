@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from ashare_quant.boards import BOARD_SCOPES, symbol_in_board_scope
 from ashare_quant.data.tushare import DEFAULT_ENV_FILE, fetch_fina_indicator
 from ashare_quant.paths import PROJECT_ROOT
 from ashare_quant.research.factors import atomic_write_csv
@@ -22,7 +23,6 @@ DEFAULT_BASIC_CACHE = (
 DEFAULT_OUTPUT_DIR = (
     PROJECT_ROOT / "data/offline/a_share_history_tushare/.long_horizon_fina_indicator_cache"
 )
-MAINBOARD_PREFIXES = ("000", "001", "002", "600", "601", "603", "605")
 FINANCIAL_COLUMNS = [
     "roe",
     "roic",
@@ -42,13 +42,16 @@ def historical_large_cap_universe(
     basic_cache: Path,
     start_date: str,
     end_date: str,
+    board_scope: str = "main",
 ) -> list[str]:
     symbols: set[str] = set()
     for path in sorted(basic_cache.glob("*.csv")):
         if not start_date <= path.stem <= end_date:
             continue
         frame = pd.read_csv(path, dtype={"ts_code": str, "symbol": str})
-        frame = frame[frame["symbol"].str.startswith(MAINBOARD_PREFIXES, na=False)].copy()
+        frame = frame[
+            frame["symbol"].map(lambda symbol: symbol_in_board_scope(symbol, board_scope))
+        ].copy()
         frame["total_mv"] = pd.to_numeric(frame["total_mv"], errors="coerce")
         frame = frame.dropna(subset=["ts_code", "total_mv"])
         large = frame["total_mv"].rank(pct=True) >= 2 / 3
@@ -153,6 +156,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--basic-cache", type=Path, default=DEFAULT_BASIC_CACHE)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--env-file", type=Path, default=DEFAULT_ENV_FILE)
+    parser.add_argument("--board-scope", default="main", choices=BOARD_SCOPES)
     parser.add_argument("--codes-file", type=Path)
     parser.add_argument(
         "--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"]
@@ -174,9 +178,11 @@ def main() -> None:
             if line.strip()
         ]
         if args.codes_file
-        else historical_large_cap_universe(args.basic_cache, args.universe_start, args.universe_end)
+        else historical_large_cap_universe(
+            args.basic_cache, args.universe_start, args.universe_end, args.board_scope
+        )
     )
-    LOGGER.info("Historical large-cap universe: %s symbols", len(ts_codes))
+    LOGGER.info("Historical large-cap universe %s: %s symbols", args.board_scope, len(ts_codes))
     cache_financials(
         ts_codes,
         args.output_dir,
