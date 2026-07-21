@@ -3,7 +3,10 @@
 面向A股的点时数据工程、因子研究、真实约束回测和每日信号自动化工具。
 
 [English](../README.md) | [架构说明](ARCHITECTURE.md) |
-[Python API](API.md) | [贡献指南](../CONTRIBUTING.md)
+[Python API](API.md) | [严格PIT风格探索](STRICT_PIT_STYLE_FREQUENCY_EXPLORATION_zh-CN.md) |
+[严格PIT因子IC组合](STRICT_PIT_FACTOR_IC_COMBINATION_REPORT_zh-CN.md) |
+[主板双月IC资产](MAIN_BOARD_BIMONTHLY_IC_ASSET_zh-CN.md) |
+[贡献指南](../CONTRIBUTING.md)
 
 > 本项目仅用于研究与教育，不构成投资建议，不保证收益，也不会自动下单。
 
@@ -138,6 +141,11 @@ data/offline/a_share_growth_boards_tushare/
 回测默认仍为`--board-scope main`。如果要在运行时把三板文件纳入候选池，不需要
 把两个CSV合并到同一个文件，可使用：
 
+> **审计状态：** `financial_quality_alpha`已完成严格PIT诊断回测，但研究流程须
+> 重置，所有2026-07-21以前发布的历史绩效均失效，不得用于投资决策。详见
+> [未来函数审计报告](FUTURE_FUNCTION_AUDIT_zh-CN.md)和
+> [严格PIT风格探索](STRICT_PIT_STYLE_FREQUENCY_EXPLORATION_zh-CN.md)。
+
 ```bash
 ashare-financial-quality \
   --prices-file data/offline/a_share_history_tushare/prices_long.csv \
@@ -157,7 +165,8 @@ ashare-financial-quality \
 ashare-fetch-industries
 ```
 
-该命令按调入和调出日期缓存申万一级行业历史成员，是行业中性策略的依赖。
+该命令缓存带分类版本生效日、调入日和调出日的申万一级行业历史成员。
+SW2021分类不会用于其生效日以前的历史截面。
 
 ### 3. 运行v4
 

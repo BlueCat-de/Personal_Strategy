@@ -147,19 +147,33 @@ def fetch_namechange(
 ) -> pd.DataFrame:
     pro = get_pro_client(env_file)
     fields = "ts_code,name,start_date,end_date,change_reason"
-    frame = _retry_call(
-        lambda: pro.namechange(
-            start_date=pd.to_datetime(start_date).strftime("%Y%m%d"),
-            end_date=pd.to_datetime(end_date).strftime("%Y%m%d"),
-            fields=fields,
+    start = pd.Timestamp(start_date)
+    end = pd.Timestamp(end_date)
+    frames: list[pd.DataFrame] = []
+    cursor = start
+    while cursor <= end:
+        window_end = min(cursor + pd.DateOffset(years=1) - pd.Timedelta(days=1), end)
+        frame = _retry_call(
+            lambda cursor=cursor, window_end=window_end: pro.namechange(
+                start_date=cursor.strftime("%Y%m%d"),
+                end_date=window_end.strftime("%Y%m%d"),
+                fields=fields,
+            )
         )
-    )
-    if frame.empty:
+        if not frame.empty:
+            frames.append(frame)
+        cursor = window_end + pd.Timedelta(days=1)
+        time.sleep(0.05)
+    if not frames:
         return pd.DataFrame(columns=fields.split(","))
+    frame = pd.concat(frames, ignore_index=True).drop_duplicates(
+        ["ts_code", "name", "start_date", "end_date", "change_reason"]
+    )
     frame["start_date"] = pd.to_datetime(frame["start_date"], errors="coerce").dt.strftime(
         "%Y-%m-%d"
     )
     frame["end_date"] = pd.to_datetime(frame["end_date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    frame = frame[pd.to_datetime(frame["start_date"], errors="coerce") <= end]
     return frame.sort_values(["ts_code", "start_date"]).reset_index(drop=True)
 
 
@@ -240,7 +254,7 @@ def fetch_fina_indicator(
 ) -> pd.DataFrame:
     pro = get_pro_client(env_file)
     fields = (
-        "ts_code,ann_date,end_date,roe,roe_waa,roa,roic,grossprofit_margin,"
+        "ts_code,ann_date,end_date,update_flag,roe,roe_waa,roa,roic,grossprofit_margin,"
         "netprofit_margin,debt_to_assets,assets_turn,ocf_to_debt,q_ocf_to_sales,"
         "q_sales_yoy,q_op_qoq,dt_netprofit_yoy,ocf_yoy,equity_yoy"
     )

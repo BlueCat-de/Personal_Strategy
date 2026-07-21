@@ -17,6 +17,8 @@ from ashare_quant.research.factors import atomic_write_csv
 DEFAULT_CACHE_DIR = DEFAULT_MARKET_DATA_DIR / ".sw_l1_member_cache"
 DEFAULT_OUTPUT = DEFAULT_MARKET_DATA_DIR / "sw_l1_membership_history.csv"
 FIELDS = "l1_code,l1_name,ts_code,name,in_date,out_date,is_new"
+CLASSIFICATION_VERSION = "SW2021"
+CLASSIFICATION_EFFECTIVE_DATE = "2021-07-30"
 
 
 def fetch_with_retry(call, retries: int = 3) -> pd.DataFrame:
@@ -85,6 +87,8 @@ def main() -> None:
     result = pd.concat(frames, ignore_index=True)
     result = result.drop_duplicates(["l1_code", "ts_code", "in_date", "out_date", "is_new"])
     result["symbol"] = result["ts_code"].str.split(".").str[0].str.zfill(6)
+    result["classification_version"] = CLASSIFICATION_VERSION
+    result["classification_effective_date"] = CLASSIFICATION_EFFECTIVE_DATE
     result = result.sort_values(["symbol", "in_date", "out_date"], na_position="last")
     atomic_write_csv(result, args.output)
     print(

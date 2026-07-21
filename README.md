@@ -148,6 +148,11 @@ data/offline/a_share_growth_boards_tushare/
 Backtests keep `--board-scope main` by default. To include the growth-board
 file at runtime without merging files on disk:
 
+> **Audit status:** `financial_quality_alpha` is under full revalidation after
+> point-in-time data defects were found and corrected. Historical performance
+> published before 2026-07-21 is invalid and must not be used for investment
+> decisions. See [Future-function audit](docs/FUTURE_FUNCTION_AUDIT_zh-CN.md).
+
 ```bash
 ashare-financial-quality \
   --prices-file data/offline/a_share_history_tushare/prices_long.csv \
@@ -169,8 +174,9 @@ See [Architecture](docs/ARCHITECTURE.md) for the schema and PIT rules.
 ashare-fetch-industries
 ```
 
-This produces historical level-one membership with effective entry and exit
-dates. It is required by the industry-neutral stock strategy.
+This produces versioned historical level-one membership with effective entry,
+exit, and classification-version dates. SW2021 classifications are not used
+before their effective date.
 
 ### 3. Run v4
 

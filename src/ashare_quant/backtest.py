@@ -5,9 +5,28 @@ from __future__ import annotations
 
 import math
 from dataclasses import asdict, dataclass
+from enum import StrEnum
 
 import numpy as np
 import pandas as pd
+
+
+class ExecutionMode(StrEnum):
+    """Public execution interface for supported transaction schedules."""
+
+    SAME_OPEN = "same_open"
+    SELL_OPEN_BUY_NEXT_OPEN = "sell_open_buy_next_open"
+    SELL_OPEN_BUY_CLOSE = "sell_open_buy_close"
+
+    @classmethod
+    def coerce(cls, value: "ExecutionMode | str") -> "ExecutionMode":
+        try:
+            return value if isinstance(value, cls) else cls(value)
+        except ValueError as exc:
+            choices = ", ".join(mode.value for mode in cls)
+            raise ValueError(
+                f"unsupported execution mode {value!r}; choose from {choices}"
+            ) from exc
 
 
 @dataclass(frozen=True)
@@ -20,6 +39,7 @@ class BacktestConfig:
     lot_size: int = 100
     benchmark_symbol: str = "000300.SH"
     account_for_corporate_actions: bool = True
+    execution_mode: ExecutionMode | str = ExecutionMode.SAME_OPEN
 
 
 @dataclass(frozen=True)
@@ -105,6 +125,7 @@ def run_local_backtest(
 ) -> BacktestArtifacts:
     if config.slippage < 0:
         raise ValueError("slippage must be non-negative")
+    execution_mode = ExecutionMode.coerce(config.execution_mode)
     close = prices.get("raw_close", prices["close"])
     open_ = prices.get("raw_open", prices["open"]).reindex_like(close)
     adj_factor = prices.get(
@@ -124,6 +145,7 @@ def run_local_backtest(
     cash = config.initial_cash
     shares = pd.Series(0, index=symbols, dtype=int)
     pending: pd.Series | None = None
+    pending_buy: pd.Series | None = None
     raw_rows: list[dict] = []
     trade_rows: list[dict] = []
     prev_equity = config.initial_cash
@@ -155,13 +177,33 @@ def run_local_backtest(
         sell_value = 0.0
         commission = 0.0
         slippage_cost = 0.0
+        close_order: pd.Series | None = None
 
-        if pending is not None:
-            target_value = pending.reindex(symbols).fillna(0.0) * equity_open
+        orders: list[tuple[pd.Series, tuple[str, ...]]] = []
+        if execution_mode == ExecutionMode.SAME_OPEN:
+            if pending is not None:
+                orders.append((pending, ("sell", "buy")))
+                pending = None
+        elif execution_mode == ExecutionMode.SELL_OPEN_BUY_NEXT_OPEN:
+            if pending_buy is not None:
+                orders.append((pending_buy, ("buy",)))
+                pending_buy = None
+            if pending is not None:
+                orders.append((pending, ("sell",)))
+                pending_buy = pending
+                pending = None
+        else:
+            if pending is not None:
+                orders.append((pending, ("sell",)))
+                close_order = pending
+                pending = None
+
+        for order, sides in orders:
+            target_value = order.reindex(symbols).fillna(0.0) * equity_open
             trade_symbols = sorted(
                 set(target_value[target_value > 0].index) | set(shares[shares > 0].index)
             )
-            for side in ["sell", "buy"]:
+            for side in sides:
                 for symbol in trade_symbols:
                     reference_price = float(op.get(symbol, np.nan))
                     suspended_flag = (
@@ -287,10 +329,85 @@ def run_local_backtest(
                             }
                             trade_rows.append(row)
                             day_trades.append(row)
-            pending = None
-
         mark_prices = mark_prices.where(cl.isna(), cl).fillna(0.0)
         equity_close = cash + float((shares * mark_prices).sum())
+        if execution_mode == ExecutionMode.SELL_OPEN_BUY_CLOSE and close_order is not None:
+            target_value = close_order.reindex(symbols).fillna(0.0) * equity_close
+            trade_symbols = sorted(
+                set(target_value[target_value > 0].index) | set(shares[shares > 0].index)
+            )
+            for symbol in trade_symbols:
+                reference_price = float(cl.get(symbol, np.nan))
+                suspended_flag = (
+                    bool(pd.to_numeric(suspended.loc[dt, symbol], errors="coerce"))
+                    if symbol in suspended.columns
+                    else False
+                )
+                can_trade, reason = _can_buy(
+                    reference_price,
+                    float(up_limit.loc[dt, symbol]) if symbol in up_limit.columns else np.nan,
+                    suspended_flag,
+                )
+                price = reference_price * (1.0 + config.slippage)
+                current_shares = int(shares.loc[symbol])
+                target_shares = (
+                    int((target_value.loc[symbol] // (price * config.lot_size)) * config.lot_size)
+                    if math.isfinite(price) and price > 0
+                    else current_shares
+                )
+                delta = target_shares - current_shares
+                if delta <= 0:
+                    continue
+                if not can_trade:
+                    day_trades.append(
+                        {
+                            "instrument": symbol,
+                            "symbol": symbol,
+                            "amount": 0,
+                            "price": price,
+                            "commission": 0.0,
+                            "reason": reason,
+                        }
+                    )
+                    continue
+                fee = max(delta * price * config.buy_cost, config.min_cost)
+                cost = delta * price + fee
+                if cost > cash:
+                    affordable = (
+                        int(max(0.0, (cash - config.min_cost)) // (price * config.lot_size))
+                        * config.lot_size
+                    )
+                    delta = max(0, min(delta, affordable))
+                    fee = (
+                        max(delta * price * config.buy_cost, config.min_cost) if delta > 0 else 0.0
+                    )
+                    cost = delta * price + fee
+                if delta > 0 and cost <= cash:
+                    notional = delta * price
+                    cash -= cost
+                    shares.loc[symbol] += delta
+                    buy_value += notional
+                    commission += fee
+                    trade_slippage = delta * (price - reference_price)
+                    slippage_cost += trade_slippage
+                    row = {
+                        "date": day,
+                        "strategy": strategy_name,
+                        "instrument": symbol,
+                        "symbol": symbol,
+                        "side": "buy",
+                        "amount": int(delta),
+                        "shares": int(delta),
+                        "price": price,
+                        "reference_price": reference_price,
+                        "slippage_cost": trade_slippage,
+                        "commission": fee,
+                        "transaction_money": notional,
+                        "realized_pnl": np.nan,
+                    }
+                    trade_rows.append(row)
+                    day_trades.append(row)
+            equity_close = cash + float((shares * mark_prices).sum())
         gross = float((shares * mark_prices).sum() / equity_close) if equity_close > 0 else 0.0
         raw_rows.append(
             {

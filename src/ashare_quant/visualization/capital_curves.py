@@ -93,7 +93,20 @@ def configure_matplotlib() -> None:
     plt.rcParams.update(
         {
             "font.family": "sans-serif",
-            "font.sans-serif": ["Arial", "DejaVu Sans"],
+            "font.sans-serif": [
+                "PingFang SC",
+                "Hiragino Sans GB",
+                "Heiti SC",
+                "STHeiti",
+                "Songti SC",
+                "Arial Unicode MS",
+                "Noto Sans CJK SC",
+                "Microsoft YaHei",
+                "SimHei",
+                "Arial",
+                "DejaVu Sans",
+            ],
+            "axes.unicode_minus": False,
             "axes.titlesize": 15,
             "axes.labelsize": 10,
             "axes.grid": True,

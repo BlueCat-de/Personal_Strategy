@@ -116,7 +116,9 @@ def load_universe(config: RebuildConfig) -> pd.DataFrame:
         raise RuntimeError("Tushare stock_basic returned no rows")
     universe["symbol"] = universe["symbol"].map(normalize_symbol)
     board_scope = normalize_board_scope(config.board_scope)
-    universe = universe[universe["symbol"].map(lambda symbol: symbol_in_board_scope(symbol, board_scope))].copy()
+    universe = universe[
+        universe["symbol"].map(lambda symbol: symbol_in_board_scope(symbol, board_scope))
+    ].copy()
     universe["list_date"] = universe["list_date"].map(yyyymmdd_or_none)
     universe["delist_date"] = universe["delist_date"].map(yyyymmdd_or_none)
     universe = (
@@ -143,6 +145,25 @@ def active_names(universe: pd.DataFrame, namechange: pd.DataFrame, date: str) ->
     active = active.sort_values(["ts_code", "start"]).drop_duplicates("ts_code", keep="last")
     names.update(active.set_index("ts_code")["name"].astype(str))
     return names
+
+
+def active_st_flags(universe: pd.DataFrame, namechange: pd.DataFrame, date: str) -> pd.Series:
+    """Return ST flags from name intervals active on the historical date only."""
+
+    flags = pd.Series(0, index=universe["ts_code"], dtype=int)
+    if namechange.empty:
+        return flags
+    dt = pd.to_datetime(date)
+    changes = namechange.copy()
+    changes["start"] = pd.to_datetime(changes["start_date"], errors="coerce")
+    changes["end"] = pd.to_datetime(changes["end_date"], errors="coerce")
+    active = changes[(changes["start"] <= dt) & (changes["end"].isna() | (changes["end"] >= dt))]
+    if active.empty:
+        return flags
+    active = active.sort_values(["ts_code", "start"]).drop_duplicates("ts_code", keep="last")
+    active_flags = active["name"].astype(str).str.upper().str.contains("ST", na=False).astype(int)
+    flags.update(pd.Series(active_flags.to_numpy(), index=active["ts_code"]))
+    return flags
 
 
 def build_daily_universe(
@@ -173,9 +194,8 @@ def build_daily_universe(
         listed["name"] = listed["ts_code"].map(names).fillna(listed["name"])
         listed["date"] = date
         listed["is_listed"] = 1
-        listed["is_st"] = (
-            listed["name"].astype(str).str.upper().str.contains("ST", na=False).astype(int)
-        )
+        listed["is_st"] = listed["ts_code"].map(active_st_flags(listed, namechange, date)).fillna(0)
+        listed["is_st"] = listed["is_st"].astype(int)
         rows.append(
             listed[
                 [
@@ -275,7 +295,11 @@ def rebuild(config: RebuildConfig) -> dict:
     config.cache_dir.mkdir(parents=True, exist_ok=True)
     dates = trading_dates(config.start_date, config.end_date, config.env_file)
     universe = load_universe(config)
-    namechange = fetch_namechange(config.start_date, config.end_date, config.env_file)
+    earliest_listing = pd.to_datetime(universe["list_date"], errors="coerce").min()
+    name_history_start = (
+        earliest_listing.strftime("%Y-%m-%d") if pd.notna(earliest_listing) else config.start_date
+    )
+    namechange = fetch_namechange(name_history_start, config.end_date, config.env_file)
     daily_universe = build_daily_universe(dates, universe, namechange)
     ts_codes = set(universe["ts_code"])
     frames: list[pd.DataFrame] = []

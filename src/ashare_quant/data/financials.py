@@ -38,6 +38,51 @@ FINANCIAL_COLUMNS = [
 ]
 
 
+def parse_tushare_date(series: pd.Series, column: str) -> pd.Series:
+    """Parse Tushare YYYYMMDD values without treating integers as Unix nanoseconds."""
+
+    raw = series.astype("string").str.strip().str.replace(r"\.0$", "", regex=True)
+    parsed = pd.to_datetime(raw, format="%Y%m%d", errors="coerce")
+    invalid = raw.notna() & raw.ne("") & parsed.isna()
+    if invalid.any():
+        examples = sorted(raw[invalid].unique().tolist())[:5]
+        raise ValueError(f"Invalid {column} YYYYMMDD values: {examples}")
+    return parsed
+
+
+def normalize_financial_rows(frame: pd.DataFrame) -> pd.DataFrame:
+    """Normalize dates and prefer the original filing when revision timing is unavailable."""
+
+    if frame.empty:
+        return frame.copy()
+    required = {"ts_code", "ann_date", "end_date"}
+    missing = sorted(required - set(frame.columns))
+    if missing:
+        raise ValueError(f"Financial data missing required columns: {missing}")
+
+    result = frame.copy()
+    result["ann_date"] = parse_tushare_date(result["ann_date"], "ann_date")
+    result["end_date"] = parse_tushare_date(result["end_date"], "end_date")
+    result = result.dropna(subset=["ts_code", "ann_date", "end_date"])
+    result = result[result["end_date"] <= result["ann_date"]].copy()
+
+    # Tushare can return update_flag=0 and update_flag=1 for the same announcement.
+    # The revised row has no separate revision timestamp, so using it historically can
+    # leak a correction published later. Prefer the original row when both are present.
+    if "update_flag" in result:
+        flag = result["update_flag"].astype("string")
+        result["_revision_priority"] = flag.map({"0": 0, "1": 1}).fillna(2)
+    else:
+        result["_revision_priority"] = 2
+    result = (
+        result.sort_values(["ts_code", "ann_date", "end_date", "_revision_priority"])
+        .drop_duplicates(["ts_code", "ann_date", "end_date"], keep="first")
+        .drop(columns="_revision_priority")
+        .reset_index(drop=True)
+    )
+    return result
+
+
 def historical_large_cap_universe(
     basic_cache: Path,
     start_date: str,
@@ -59,6 +104,27 @@ def historical_large_cap_universe(
     return sorted(symbols)
 
 
+def listed_universe(
+    universe_file: Path,
+    start_date: str,
+    end_date: str,
+    board_scope: str = "main",
+) -> list[str]:
+    """Return all stocks listed at any point in the requested period."""
+
+    universe = pd.read_csv(
+        universe_file,
+        dtype={"ts_code": str, "symbol": str, "list_date": str, "delist_date": str},
+    )
+    list_date = pd.to_datetime(universe["list_date"], errors="coerce")
+    delist_date = pd.to_datetime(universe["delist_date"], errors="coerce")
+    active = (list_date <= pd.Timestamp(end_date)) & (
+        delist_date.isna() | (delist_date >= pd.Timestamp(start_date))
+    )
+    in_scope = universe["symbol"].map(lambda symbol: symbol_in_board_scope(symbol, board_scope))
+    return sorted(universe.loc[active & in_scope, "ts_code"].dropna().unique().tolist())
+
+
 def cache_financials(
     ts_codes: list[str],
     output_dir: Path,
@@ -69,55 +135,104 @@ def cache_financials(
     output_dir.mkdir(parents=True, exist_ok=True)
     for index, ts_code in enumerate(ts_codes, start=1):
         path = output_dir / f"{ts_code.replace('.', '_')}.csv"
+        requested_start = pd.Timestamp(start_date)
+        requested_end = pd.Timestamp(end_date)
+        fetch_windows: list[tuple[pd.Timestamp, pd.Timestamp]] = []
         if path.exists():
-            cached = pd.read_csv(path, dtype={"ts_code": str})
-            cached_end = (
-                pd.to_datetime(cached["ann_date"], errors="coerce").max()
-                if not cached.empty and "ann_date" in cached
-                else pd.NaT
+            cached = pd.read_csv(
+                path,
+                dtype={
+                    "ts_code": str,
+                    "ann_date": str,
+                    "end_date": str,
+                    "update_flag": str,
+                },
             )
-            if pd.notna(cached_end) and cached_end >= pd.Timestamp(end_date):
+            normalized_cache = normalize_financial_rows(cached)
+            cached_period_start = (
+                normalized_cache["end_date"].min() if not normalized_cache.empty else pd.NaT
+            )
+            cached_period_end = (
+                normalized_cache["end_date"].max() if not normalized_cache.empty else pd.NaT
+            )
+            if pd.isna(cached_period_start) or pd.isna(cached_period_end):
+                fetch_windows.append((requested_start, requested_end))
+            else:
+                if requested_start < cached_period_start:
+                    fetch_windows.append(
+                        (
+                            requested_start,
+                            min(requested_end, cached_period_start - pd.Timedelta(days=1)),
+                        )
+                    )
+                if requested_end > cached_period_end:
+                    fetch_windows.append(
+                        (
+                            max(requested_start, cached_period_end + pd.Timedelta(days=1)),
+                            requested_end,
+                        )
+                    )
+            fetch_windows = [(start, end) for start, end in fetch_windows if start <= end]
+            if not fetch_windows:
                 LOGGER.info("Financial cache %s/%s %s cached", index, len(ts_codes), ts_code)
                 continue
-            incremental_start = (
-                (cached_end + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
-                if pd.notna(cached_end)
-                else start_date
-            )
         else:
             cached = pd.DataFrame()
-            incremental_start = start_date
-        LOGGER.info("Financial cache %s/%s %s fetch", index, len(ts_codes), ts_code)
-        frame = fetch_fina_indicator(ts_code, incremental_start, end_date, env_file)
-        frame = pd.concat([cached, frame], ignore_index=True)
-        if not frame.empty:
-            frame = (
-                frame.sort_values(["ann_date", "end_date"])
-                .drop_duplicates(["ann_date", "end_date"], keep="last")
-                .reset_index(drop=True)
+            fetch_windows.append((requested_start, requested_end))
+        fetched: list[pd.DataFrame] = []
+        for window_start, window_end in fetch_windows:
+            LOGGER.info(
+                "Financial cache %s/%s %s fetch %s/%s",
+                index,
+                len(ts_codes),
+                ts_code,
+                window_start.date(),
+                window_end.date(),
             )
+            fetched.append(
+                fetch_fina_indicator(
+                    ts_code,
+                    window_start.strftime("%Y-%m-%d"),
+                    window_end.strftime("%Y-%m-%d"),
+                    env_file,
+                )
+            )
+            time.sleep(0.36)
+        frame = pd.concat([cached, *fetched], ignore_index=True)
+        if not frame.empty:
+            frame = normalize_financial_rows(frame)
+            frame["ann_date"] = frame["ann_date"].dt.strftime("%Y%m%d")
+            frame["end_date"] = frame["end_date"].dt.strftime("%Y%m%d")
         atomic_write_csv(frame, path)
-        time.sleep(0.36)
 
 
 def load_financial_history(cache_dir: Path) -> pd.DataFrame:
     frames: list[pd.DataFrame] = []
     for path in sorted(cache_dir.glob("*.csv")):
-        frame = pd.read_csv(path, dtype={"ts_code": str})
+        frame = pd.read_csv(
+            path,
+            dtype={
+                "ts_code": str,
+                "ann_date": str,
+                "end_date": str,
+                "update_flag": str,
+            },
+        )
         if frame.empty:
             continue
         frames.append(frame)
     if not frames:
         return pd.DataFrame()
-    history = pd.concat(frames, ignore_index=True)
-    history["ann_date"] = pd.to_datetime(history["ann_date"], errors="coerce")
-    history["end_date"] = pd.to_datetime(history["end_date"], errors="coerce")
+    history = normalize_financial_rows(pd.concat(frames, ignore_index=True))
     history["symbol"] = history["ts_code"].str.split(".").str[0].str.zfill(6)
+    # Tushare documents fina_indicator as generally entering the service on T+1.
+    # A calendar-day lag is conservative for a signal generated after market close.
+    history["available_date"] = history["ann_date"] + pd.Timedelta(days=1)
     for column in FINANCIAL_COLUMNS:
         history[column] = pd.to_numeric(history.get(column), errors="coerce")
     return (
-        history.dropna(subset=["symbol", "ann_date", "end_date"])
-        .sort_values(["symbol", "ann_date", "end_date"])
+        history.dropna(subset=["symbol", "ann_date", "end_date", "available_date"])
+        .sort_values(["symbol", "available_date", "end_date", "ann_date"])
         .drop_duplicates(["symbol", "ann_date", "end_date"], keep="last")
         .reset_index(drop=True)
     )
@@ -129,10 +244,12 @@ def attach_financial_snapshots(
 ) -> None:
     if history.empty:
         raise ValueError("Financial history is empty")
+    if "available_date" not in history:
+        raise ValueError("Financial history is missing available_date")
     for date, panel in panels.items():
-        available = history[history["ann_date"] <= date]
+        available = history[history["available_date"] <= date]
         latest = (
-            available.sort_values(["symbol", "end_date", "ann_date"])
+            available.sort_values(["symbol", "end_date", "available_date", "ann_date"])
             .drop_duplicates("symbol", keep="last")
             .set_index("symbol")
         )
@@ -154,6 +271,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--financial-start", default="2009-01-01")
     parser.add_argument("--financial-end", default="2020-12-31")
     parser.add_argument("--basic-cache", type=Path, default=DEFAULT_BASIC_CACHE)
+    parser.add_argument("--universe-file", type=Path)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--env-file", type=Path, default=DEFAULT_ENV_FILE)
     parser.add_argument("--board-scope", default="main", choices=BOARD_SCOPES)
@@ -178,8 +296,17 @@ def main() -> None:
             if line.strip()
         ]
         if args.codes_file
-        else historical_large_cap_universe(
-            args.basic_cache, args.universe_start, args.universe_end, args.board_scope
+        else (
+            listed_universe(
+                args.universe_file,
+                args.universe_start,
+                args.universe_end,
+                args.board_scope,
+            )
+            if args.universe_file
+            else historical_large_cap_universe(
+                args.basic_cache, args.universe_start, args.universe_end, args.board_scope
+            )
         )
     )
     LOGGER.info("Historical large-cap universe %s: %s symbols", args.board_scope, len(ts_codes))
