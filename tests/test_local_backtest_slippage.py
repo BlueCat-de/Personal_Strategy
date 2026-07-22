@@ -76,6 +76,29 @@ class SlippageBacktestTest(unittest.TestCase):
                 strategy_name="invalid",
             )
 
+    def test_slippage_cannot_cross_the_price_limit(self) -> None:
+        prices = sample_prices()
+        dates = prices["close"].index
+        prices["raw_open"].loc[dates[1], "000001"] = 10.0
+        prices["raw_close"].loc[dates[1], "000001"] = 10.0
+        prices["up_limit"].loc[dates[1], "000001"] = 10.005
+
+        result = run_local_backtest(
+            prices,
+            {dates[0]: pd.Series({"000001": 1.0})},
+            BacktestConfig(
+                initial_cash=10_000.0,
+                buy_cost=0.0,
+                sell_cost=0.0,
+                slippage=0.001,
+                min_cost=0.0,
+            ),
+            strategy_name="limit_after_slippage",
+        )
+
+        self.assertTrue(result.trades.empty)
+        self.assertEqual(result.raw_perf.iloc[1]["long_value"], 0.0)
+
     def test_rebalance_sizing_does_not_use_same_day_close(self) -> None:
         dates = pd.to_datetime(["2026-01-05", "2026-01-06", "2026-01-07"])
         columns = ["A"]
@@ -161,6 +184,70 @@ class SlippageBacktestTest(unittest.TestCase):
         final = result.raw_perf.iloc[-1]
         self.assertAlmostEqual(final["portfolio_value"], 12_000.0)
         self.assertAlmostEqual(final["returns"], 12.0 / 11.0 - 1.0)
+
+    def test_participation_cap_carries_unfilled_buy_orders_forward(self) -> None:
+        dates = pd.bdate_range("2026-01-05", periods=5)
+        columns = ["A"]
+        values = pd.DataFrame(10.0, index=dates, columns=columns)
+        prices = {
+            "open": values,
+            "raw_open": values,
+            "close": values,
+            "raw_close": values,
+            # Tushare volume is stored in hands. A 1% cap of 100 hands
+            # permits exactly 100 shares per execution day.
+            "volume": pd.DataFrame(100.0, index=dates, columns=columns),
+        }
+
+        result = run_local_backtest(
+            prices,
+            {dates[0]: pd.Series([1.0], index=columns)},
+            BacktestConfig(
+                initial_cash=10_000.0,
+                buy_cost=0.0,
+                sell_cost=0.0,
+                min_cost=0.0,
+                max_participation_rate=0.01,
+            ),
+            strategy_name="participation_cap",
+        )
+
+        buys = result.trades[result.trades["side"] == "buy"]
+        self.assertEqual(buys["amount"].tolist(), [100, 100, 100, 100])
+        self.assertEqual(buys["date"].tolist(), [date.strftime("%Y-%m-%d") for date in dates[1:]])
+        self.assertEqual(result.raw_perf.iloc[-1]["pending_order_shares"], 600)
+
+    def test_participation_cap_does_not_use_execution_day_volume(self) -> None:
+        dates = pd.bdate_range("2026-01-05", periods=3)
+        columns = ["A"]
+        values = pd.DataFrame(10.0, index=dates, columns=columns)
+        prices = {
+            "open": values,
+            "raw_open": values,
+            "close": values,
+            "raw_close": values,
+            # The day-two volume must not affect the day-two opening fill.
+            "volume": pd.DataFrame([100.0, 1_000_000.0, 100.0], index=dates, columns=columns),
+        }
+
+        result = run_local_backtest(
+            prices,
+            {dates[0]: pd.Series([1.0], index=columns)},
+            BacktestConfig(
+                initial_cash=10_000.0,
+                buy_cost=0.0,
+                sell_cost=0.0,
+                min_cost=0.0,
+                max_participation_rate=0.01,
+                liquidity_lookback_days=20,
+            ),
+            strategy_name="pit_participation_cap",
+        )
+
+        first_fill = result.trades.iloc[0]
+        self.assertEqual(first_fill["date"], dates[1].strftime("%Y-%m-%d"))
+        self.assertEqual(first_fill["amount"], 100)
+        self.assertEqual(first_fill["liquidity_estimate_hands"], 100.0)
 
 
 if __name__ == "__main__":

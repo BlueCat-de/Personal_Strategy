@@ -135,6 +135,39 @@ class MainBoardBimonthlyICTest(unittest.TestCase):
         self.assertEqual(sell_old.date, dates[3].strftime("%Y-%m-%d"))
         self.assertAlmostEqual(buy_new.reference_price, 22.0)
 
+    def test_sell_open_buy_close_sizes_order_without_closing_price(self) -> None:
+        dates = pd.bdate_range("2026-01-05", periods=2)
+        columns = ["600000"]
+        open_prices = pd.DataFrame([[10.0], [10.0]], index=dates, columns=columns)
+        close_prices = pd.DataFrame([[10.0], [20.0]], index=dates, columns=columns)
+        prices = {
+            "open": open_prices,
+            "raw_open": open_prices,
+            "close": close_prices,
+            "raw_close": close_prices,
+            "adj_factor": pd.DataFrame(1.0, index=dates, columns=columns),
+            "up_limit": pd.DataFrame(np.nan, index=dates, columns=columns),
+            "down_limit": pd.DataFrame(np.nan, index=dates, columns=columns),
+            "is_suspended": pd.DataFrame(0, index=dates, columns=columns),
+        }
+
+        result = run_local_backtest(
+            prices,
+            {dates[0]: pd.Series([0.1], index=columns)},
+            BacktestConfig(
+                initial_cash=100_000.0,
+                buy_cost=0.0,
+                sell_cost=0.0,
+                min_cost=0.0,
+                execution_mode="sell_open_buy_close",
+            ),
+            strategy_name="close_order_without_close_leakage",
+        )
+
+        buy = result.trades.iloc[0]
+        self.assertEqual(buy.amount, 1_000)
+        self.assertAlmostEqual(buy.reference_price, 20.0)
+
     def test_frozen_config_is_main_board_bimonthly_and_eight_positions(self) -> None:
         config = MainBoardBimonthlyICConfig()
 
