@@ -2,7 +2,11 @@ import unittest
 
 import pandas as pd
 
-from ashare_quant.backtest import BacktestConfig, run_local_backtest
+from ashare_quant.backtest import (
+    BacktestConfig,
+    historical_volume_estimate,
+    run_local_backtest,
+)
 
 
 def sample_prices() -> dict[str, pd.DataFrame]:
@@ -248,6 +252,37 @@ class SlippageBacktestTest(unittest.TestCase):
         self.assertEqual(first_fill["date"], dates[1].strftime("%Y-%m-%d"))
         self.assertEqual(first_fill["amount"], 100)
         self.assertEqual(first_fill["liquidity_estimate_hands"], 100.0)
+
+    def test_precomputed_volume_estimate_matches_default_path(self) -> None:
+        dates = pd.bdate_range("2026-01-05", periods=4)
+        columns = ["A"]
+        values = pd.DataFrame(10.0, index=dates, columns=columns)
+        prices = {
+            "open": values,
+            "raw_open": values,
+            "close": values,
+            "raw_close": values,
+            "volume": pd.DataFrame([100.0, 200.0, 300.0, 400.0], index=dates, columns=columns),
+        }
+        config = BacktestConfig(
+            initial_cash=10_000.0,
+            buy_cost=0.0,
+            sell_cost=0.0,
+            min_cost=0.0,
+            max_participation_rate=0.01,
+            liquidity_lookback_days=20,
+        )
+        targets = {dates[0]: pd.Series([1.0], index=columns)}
+        default = run_local_backtest(prices, targets, config, strategy_name="estimate_equivalence")
+        precomputed_prices = {
+            **prices,
+            "estimated_volume_hands": historical_volume_estimate(prices, 20),
+        }
+        precomputed = run_local_backtest(
+            precomputed_prices, targets, config, strategy_name="estimate_equivalence"
+        )
+        pd.testing.assert_frame_equal(default.trades, precomputed.trades)
+        pd.testing.assert_frame_equal(default.raw_perf, precomputed.raw_perf)
 
 
 if __name__ == "__main__":

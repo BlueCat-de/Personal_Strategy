@@ -484,6 +484,21 @@ def run_local_backtest(
     return BacktestArtifacts(raw_perf=raw_perf, trades=trades, summary=summary)
 
 
+def historical_volume_estimate(
+    prices: dict[str, pd.DataFrame],
+    lookback_days: int,
+) -> pd.DataFrame:
+    """Estimate volume from full trading days strictly before each execution date."""
+
+    if lookback_days < 1:
+        raise ValueError("lookback_days must be positive")
+    close = prices.get("raw_close", prices["close"])
+    volume = prices.get(
+        "volume", pd.DataFrame(index=close.index, columns=close.columns, dtype=float)
+    ).reindex_like(close)
+    return volume.shift(1).rolling(lookback_days, min_periods=1).median()
+
+
 def _run_local_backtest_with_liquidity(
     prices: dict[str, pd.DataFrame],
     targets: dict[pd.Timestamp, pd.Series],
@@ -506,14 +521,10 @@ def _run_local_backtest_with_liquidity(
     volume = prices.get(
         "volume", pd.DataFrame(index=close.index, columns=close.columns, dtype=float)
     ).reindex_like(close)
-    estimated_volume_hands = (
-        volume.shift(1)
-        .rolling(
-            config.liquidity_lookback_days,
-            min_periods=1,
-        )
-        .median()
-    )
+    estimated_volume_hands = prices.get("estimated_volume_hands")
+    if estimated_volume_hands is None:
+        estimated_volume_hands = historical_volume_estimate(prices, config.liquidity_lookback_days)
+    estimated_volume_hands = estimated_volume_hands.reindex_like(close)
     adj_factor = prices.get(
         "adj_factor", pd.DataFrame(1.0, index=close.index, columns=close.columns)
     ).reindex_like(close)

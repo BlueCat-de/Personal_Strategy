@@ -6,10 +6,32 @@ import numpy as np
 import pandas as pd
 
 from ashare_quant.data.tushare import get_pro_client
-from ashare_quant.paths import DEFAULT_ENV_FILE
+from ashare_quant.paths import DEFAULT_ENV_FILE, DEFAULT_MARKET_DATA_DIR
 
 
 CSI300 = "000300.SH"
+DEFAULT_BENCHMARK_FILE = DEFAULT_MARKET_DATA_DIR / "benchmark_000300.csv"
+
+
+def load_benchmark_file(path: Path, start_date: str, end_date: str) -> pd.DataFrame:
+    """Load a complete local benchmark slice or return an empty frame."""
+
+    if not path.exists():
+        return pd.DataFrame()
+    frame = pd.read_csv(path)
+    required = {"date", "benchmark_close"}
+    missing = sorted(required - set(frame.columns))
+    if missing:
+        raise ValueError(f"benchmark cache missing columns: {missing}")
+    frame["date"] = pd.to_datetime(frame["date"])
+    frame["benchmark_close"] = pd.to_numeric(frame["benchmark_close"], errors="coerce")
+    frame = frame.dropna(subset=["date", "benchmark_close"]).sort_values("date")
+    start = pd.Timestamp(start_date)
+    end = pd.Timestamp(end_date)
+    subset = frame[frame["date"].between(start, end)].copy()
+    if subset.empty or subset["date"].min() > start or subset["date"].max() < end:
+        return pd.DataFrame()
+    return subset
 
 
 def fetch_benchmark(
@@ -18,7 +40,12 @@ def fetch_benchmark(
     *,
     env_file: Path = DEFAULT_ENV_FILE,
     ts_code: str = CSI300,
+    cache_file: Path | None = DEFAULT_BENCHMARK_FILE,
 ) -> pd.DataFrame:
+    if cache_file is not None:
+        cached = load_benchmark_file(cache_file, start_date, end_date)
+        if not cached.empty:
+            return cached
     pro = get_pro_client(env_file)
     frame = pro.index_daily(
         ts_code=ts_code,

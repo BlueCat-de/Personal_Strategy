@@ -316,12 +316,118 @@ slippage configuration.
 
 ## Data and Reproducibility
 
-Tushare data is subject to its own license and account permissions. This
-repository does not redistribute Tushare market data. Backtests are only
-reproducible when the same point-in-time inputs and configuration are used.
+Git contains code and documentation only. After cloning, assemble these local
+items yourself:
 
-Historical snapshots stored under `data/snapshots/` are local assets and are
-not part of the Git repository.
+1. `.env.local`, containing your own `TUSHARE_TOKEN`.
+2. `deploy/ptrade/tushare_token.csv`, only when running the Ptrade adapter.
+3. The strict-PIT data tree under `data/offline/a_share_history_tushare/`.
+
+Never commit either token file. The Ptrade transaction exports and all
+backtest outputs are also intentionally ignored.
+
+### Restore the frozen local data bundle
+
+The reproducibility bundle is distributed separately because Tushare data is
+subject to its own license and GitHub is not suitable for multi-gigabyte market
+data. Obtain `ashare_quant_main_reproduction_YYYYMMDD.tar.gz` and its
+`.sha256` file through the project's private artifact channel, place both in
+the repository root, then run:
+
+```bash
+shasum -a 256 -c ashare_quant_main_reproduction_YYYYMMDD.tar.gz.sha256
+tar -xzf ashare_quant_main_reproduction_YYYYMMDD.tar.gz
+```
+
+The archive restores paths directly under:
+
+```text
+data/offline/a_share_history_tushare/
+├── prices_long.csv
+├── daily_universe.csv
+├── universe.csv
+├── manifest.json
+├── benchmark_000300.csv
+├── sw_l1_membership_history.csv
+├── .daily_basic_monthly_cache/
+├── .long_horizon_daily_basic_cache/
+└── .long_horizon_fina_indicator_cache/
+```
+
+These inputs reproduce the frozen main-board strategy and the committed
+strict-PIT research through 2026-07-17. The bundle excludes API credentials,
+backtest outputs, backup directories, Ptrade transaction exports, and the
+separate growth-board dataset.
+
+### Rebuild from Tushare instead
+
+To reconstruct the inputs independently, first configure `.env.local`, then
+build the main-board PIT bars:
+
+```bash
+ashare-rebuild-data \
+  --start-date 2006-01-04 \
+  --end-date 2026-07-17 \
+  --board-scope main \
+  --output-dir data/offline/a_share_history_tushare
+
+ashare-fetch-industries
+```
+
+Next populate monthly `daily_basic` snapshots for every first trading day,
+and cache `fina_indicator` records for every symbol in `universe.csv`.
+Financial rows must retain `ann_date`, `end_date`, and `update_flag`; research
+uses `available_date = ann_date + 1 calendar day` and prefers original filings
+when revision timing is unavailable. Do not replace these caches with a
+current cross-section.
+
+The separate cache names are intentional:
+
+- `.daily_basic_monthly_cache`: short-horizon strategy inputs.
+- `.long_horizon_daily_basic_cache`: 2007-2026 style and factor research.
+- `.long_horizon_fina_indicator_cache`: announcement-dated financial history.
+- `sw_l1_membership_history.csv`: versioned PIT Shenwan membership.
+- `benchmark_000300.csv`: offline CSI 300 price-index comparison.
+
+Rebuilding can produce different historical values if Tushare revises its
+database. Exact historical reproduction therefore requires the frozen bundle,
+not merely the same API commands.
+
+### Reproduce the current frozen strategy
+
+```bash
+ashare-main-board-bimonthly-ic \
+  --warmup-start-date 2006-01-04 \
+  --start-date 2007-01-01 \
+  --end-date 2026-07-17 \
+  --initial-cash 100000 \
+  --positions 8 \
+  --rebalance-offset 0 \
+  --slippage 0.001 \
+  --output-dir data/backtests/main_board_bimonthly_ic
+```
+
+The current research modules can be rerun with:
+
+```bash
+python -m ashare_quant.research.incremental_behavioral_factors
+python -m ashare_quant.research.incremental_behavioral_robustness
+python -m ashare_quant.research.core_satellite_blend
+python -m ashare_quant.research.dual_regime_strategy
+python -m ashare_quant.research.dual_regime_meta_strategy
+python -m ashare_quant.research.dual_regime_frozen_model
+python -m ashare_quant.research.dual_regime_dual_offset_model
+python -m ashare_quant.research.score_layer_blend --positions 6 8 10 12
+```
+
+Generate a fresh bundle from an already assembled workspace with:
+
+```bash
+python scripts/package_reproduction_data.py
+```
+
+The command writes the archive, a per-file manifest, and an archive SHA-256
+file under `data/packages/`.
 
 ## Contributing
 

@@ -302,10 +302,107 @@ ruff check src tests
 
 ## 数据与复现
 
-Tushare数据受其自身许可和账户权限约束，本仓库不重新分发行情数据。
-只有在数据版本、PIT口径和配置一致时，回测才具有可比性。
+Git仓库只包含代码和文档。拉取仓库后，需要自行在本地组装：
 
-`data/snapshots/`中的历史快照是本地资产，不属于Git仓库。
+1. `.env.local`：填写自己的`TUSHARE_TOKEN`；
+2. `deploy/ptrade/tushare_token.csv`：仅运行Ptrade版本时需要；
+3. `data/offline/a_share_history_tushare/`下的严格PIT数据。
+
+严禁提交上述Token。Ptrade成交导出、回测结果和运行日志同样不会进入Git。
+
+### 使用冻结数据包
+
+由于Tushare许可约束和GitHub文件大小限制，数据包通过项目私有制品渠道单独传输。
+取得`ashare_quant_main_reproduction_YYYYMMDD.tar.gz`及对应`.sha256`文件后，
+将它们放在仓库根目录执行：
+
+```bash
+shasum -a 256 -c ashare_quant_main_reproduction_YYYYMMDD.tar.gz.sha256
+tar -xzf ashare_quant_main_reproduction_YYYYMMDD.tar.gz
+```
+
+压缩包会直接恢复以下结构：
+
+```text
+data/offline/a_share_history_tushare/
+├── prices_long.csv
+├── daily_universe.csv
+├── universe.csv
+├── manifest.json
+├── benchmark_000300.csv
+├── sw_l1_membership_history.csv
+├── .daily_basic_monthly_cache/
+├── .long_horizon_daily_basic_cache/
+└── .long_horizon_fina_indicator_cache/
+```
+
+该数据包覆盖当前冻结主板策略及已提交的严格PIT研究，截止日期为2026-07-17。
+它不包含API密钥、回测输出、历史备份、Ptrade成交导出及单独的成长板数据。
+
+### 从Tushare重新组装
+
+先配置`.env.local`，然后构建主板PIT行情和行业历史：
+
+```bash
+ashare-rebuild-data \
+  --start-date 2006-01-04 \
+  --end-date 2026-07-17 \
+  --board-scope main \
+  --output-dir data/offline/a_share_history_tushare
+
+ashare-fetch-industries
+```
+
+随后需要为每个月首个交易日缓存`daily_basic`，并对`universe.csv`中的每只股票
+缓存`fina_indicator`历史。财务缓存必须保留`ann_date`、`end_date`和
+`update_flag`；研究代码使用`available_date = ann_date + 1个自然日`，并在缺少
+独立修订时间时优先原始披露。禁止用当前截面回填这些历史缓存。
+
+各目录用途如下：
+
+- `.daily_basic_monthly_cache`：短周期策略基础面快照；
+- `.long_horizon_daily_basic_cache`：2007—2026风格和因子研究快照；
+- `.long_horizon_fina_indicator_cache`：按公告日保存的历史财务指标；
+- `sw_l1_membership_history.csv`：带分类版本生效日的PIT申万行业；
+- `benchmark_000300.csv`：离线沪深300价格指数。
+
+如果Tushare事后修订历史数据，重新拉取的结果可能与原研究不同。因此精确复现必须使用
+冻结数据包，仅执行相同API命令不能保证字节级一致。
+
+### 复现当前冻结策略
+
+```bash
+ashare-main-board-bimonthly-ic \
+  --warmup-start-date 2006-01-04 \
+  --start-date 2007-01-01 \
+  --end-date 2026-07-17 \
+  --initial-cash 100000 \
+  --positions 8 \
+  --rebalance-offset 0 \
+  --slippage 0.001 \
+  --output-dir data/backtests/main_board_bimonthly_ic
+```
+
+本轮研究可按顺序运行：
+
+```bash
+python -m ashare_quant.research.incremental_behavioral_factors
+python -m ashare_quant.research.incremental_behavioral_robustness
+python -m ashare_quant.research.core_satellite_blend
+python -m ashare_quant.research.dual_regime_strategy
+python -m ashare_quant.research.dual_regime_meta_strategy
+python -m ashare_quant.research.dual_regime_frozen_model
+python -m ashare_quant.research.dual_regime_dual_offset_model
+python -m ashare_quant.research.score_layer_blend --positions 6 8 10 12
+```
+
+已组装好本地数据后，可生成新的复现包：
+
+```bash
+python scripts/package_reproduction_data.py
+```
+
+命令会在`data/packages/`下生成压缩包、逐文件清单和压缩包SHA-256文件。
 
 ## 贡献
 
