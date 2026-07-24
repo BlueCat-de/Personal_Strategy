@@ -32,6 +32,7 @@ Thumbs.db
 !.env.example
 .feishu_webhook
 !.feishu_webhook.example
+deploy/ptrade/tushare_token.csv
 
 # Data and runtime outputs
 /data/
