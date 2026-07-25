@@ -7,6 +7,22 @@ and the project uses semantic versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Offset-neutral stock-only strategy asset, including frozen forward-validation
+  status, capital-aware configuration, PIT regression tests, research report,
+  and matplotlib capital-sensitivity charts.
+- Historical industry-relative-strength research and PIT universe regression
+  coverage.
+- Strategy asset register documenting versioned code, local data boundaries,
+  and forward-validation requirements.
+
+### Changed
+
+- The offset-neutral strategy now accepts `--initial-cash` from CNY 50,000;
+  CNY 200,000 remains a recommendation rather than a runtime restriction.
+- Added matplotlib to the runtime dependency lists.
+
 ## [0.1.0] - 2026-07-18
 
 ### Added

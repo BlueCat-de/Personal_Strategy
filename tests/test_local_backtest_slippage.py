@@ -2,7 +2,11 @@ import unittest
 
 import pandas as pd
 
-from ashare_quant.backtest import BacktestConfig, run_local_backtest
+from ashare_quant.backtest import (
+    BacktestConfig,
+    historical_volume_estimate,
+    run_local_backtest,
+)
 
 
 def sample_prices() -> dict[str, pd.DataFrame]:
@@ -75,6 +79,210 @@ class SlippageBacktestTest(unittest.TestCase):
                 BacktestConfig(slippage=-0.001),
                 strategy_name="invalid",
             )
+
+    def test_slippage_cannot_cross_the_price_limit(self) -> None:
+        prices = sample_prices()
+        dates = prices["close"].index
+        prices["raw_open"].loc[dates[1], "000001"] = 10.0
+        prices["raw_close"].loc[dates[1], "000001"] = 10.0
+        prices["up_limit"].loc[dates[1], "000001"] = 10.005
+
+        result = run_local_backtest(
+            prices,
+            {dates[0]: pd.Series({"000001": 1.0})},
+            BacktestConfig(
+                initial_cash=10_000.0,
+                buy_cost=0.0,
+                sell_cost=0.0,
+                slippage=0.001,
+                min_cost=0.0,
+            ),
+            strategy_name="limit_after_slippage",
+        )
+
+        self.assertTrue(result.trades.empty)
+        self.assertEqual(result.raw_perf.iloc[1]["long_value"], 0.0)
+
+    def test_rebalance_sizing_does_not_use_same_day_close(self) -> None:
+        dates = pd.to_datetime(["2026-01-05", "2026-01-06", "2026-01-07"])
+        columns = ["A"]
+        prices = {
+            "raw_open": pd.DataFrame([[10.0], [10.0], [10.0]], index=dates, columns=columns),
+            "raw_close": pd.DataFrame([[10.0], [10.0], [100.0]], index=dates, columns=columns),
+            "open": pd.DataFrame([[10.0], [10.0], [10.0]], index=dates, columns=columns),
+            "close": pd.DataFrame([[10.0], [10.0], [100.0]], index=dates, columns=columns),
+        }
+        targets = {
+            dates[0]: pd.Series([1.0], index=columns),
+            dates[1]: pd.Series([0.5], index=columns),
+        }
+
+        result = run_local_backtest(
+            prices,
+            targets,
+            BacktestConfig(
+                initial_cash=10_000.0,
+                buy_cost=0.0,
+                sell_cost=0.0,
+                min_cost=0.0,
+            ),
+            strategy_name="no_close_leakage",
+        )
+
+        day_three = result.trades[result.trades["date"] == "2026-01-07"]
+        self.assertEqual(day_three.iloc[0]["side"], "sell")
+        self.assertEqual(day_three.iloc[0]["amount"], -500)
+
+    def test_adjustment_factor_preserves_wealth_across_ex_date(self) -> None:
+        dates = pd.to_datetime(["2026-01-05", "2026-01-06", "2026-01-07", "2026-01-08"])
+        columns = ["A"]
+        raw = pd.DataFrame([[10.0], [10.0], [5.0], [5.0]], index=dates, columns=columns)
+        prices = {
+            "raw_open": raw.copy(),
+            "raw_close": raw.copy(),
+            "open": pd.DataFrame([[10.0], [10.0], [10.0], [10.0]], index=dates, columns=columns),
+            "close": pd.DataFrame([[10.0], [10.0], [10.0], [10.0]], index=dates, columns=columns),
+            "adj_factor": pd.DataFrame([[1.0], [1.0], [2.0], [2.0]], index=dates, columns=columns),
+        }
+        targets = {dates[0]: pd.Series([1.0], index=columns)}
+
+        result = run_local_backtest(
+            prices,
+            targets,
+            BacktestConfig(
+                initial_cash=10_000.0,
+                buy_cost=0.0,
+                sell_cost=0.0,
+                min_cost=0.0,
+            ),
+            strategy_name="corporate_action",
+        )
+
+        ex_date = result.raw_perf[result.raw_perf["date"] == "2026-01-07"].iloc[0]
+        self.assertAlmostEqual(ex_date["portfolio_value"], 10_000.0)
+        self.assertAlmostEqual(ex_date["corporate_action_adjustment"], 5_000.0)
+
+    def test_close_marks_are_updated_every_day(self) -> None:
+        dates = pd.to_datetime(["2026-01-05", "2026-01-06", "2026-01-07"])
+        columns = ["A"]
+        prices = {
+            "raw_open": pd.DataFrame([[10.0], [10.0], [11.0]], index=dates, columns=columns),
+            "raw_close": pd.DataFrame([[10.0], [11.0], [12.0]], index=dates, columns=columns),
+            "open": pd.DataFrame([[10.0], [10.0], [11.0]], index=dates, columns=columns),
+            "close": pd.DataFrame([[10.0], [11.0], [12.0]], index=dates, columns=columns),
+        }
+        targets = {dates[0]: pd.Series([1.0], index=columns)}
+
+        result = run_local_backtest(
+            prices,
+            targets,
+            BacktestConfig(
+                initial_cash=10_000.0,
+                buy_cost=0.0,
+                sell_cost=0.0,
+                min_cost=0.0,
+            ),
+            strategy_name="daily_marks",
+        )
+
+        final = result.raw_perf.iloc[-1]
+        self.assertAlmostEqual(final["portfolio_value"], 12_000.0)
+        self.assertAlmostEqual(final["returns"], 12.0 / 11.0 - 1.0)
+
+    def test_participation_cap_carries_unfilled_buy_orders_forward(self) -> None:
+        dates = pd.bdate_range("2026-01-05", periods=5)
+        columns = ["A"]
+        values = pd.DataFrame(10.0, index=dates, columns=columns)
+        prices = {
+            "open": values,
+            "raw_open": values,
+            "close": values,
+            "raw_close": values,
+            # Tushare volume is stored in hands. A 1% cap of 100 hands
+            # permits exactly 100 shares per execution day.
+            "volume": pd.DataFrame(100.0, index=dates, columns=columns),
+        }
+
+        result = run_local_backtest(
+            prices,
+            {dates[0]: pd.Series([1.0], index=columns)},
+            BacktestConfig(
+                initial_cash=10_000.0,
+                buy_cost=0.0,
+                sell_cost=0.0,
+                min_cost=0.0,
+                max_participation_rate=0.01,
+            ),
+            strategy_name="participation_cap",
+        )
+
+        buys = result.trades[result.trades["side"] == "buy"]
+        self.assertEqual(buys["amount"].tolist(), [100, 100, 100, 100])
+        self.assertEqual(buys["date"].tolist(), [date.strftime("%Y-%m-%d") for date in dates[1:]])
+        self.assertEqual(result.raw_perf.iloc[-1]["pending_order_shares"], 600)
+
+    def test_participation_cap_does_not_use_execution_day_volume(self) -> None:
+        dates = pd.bdate_range("2026-01-05", periods=3)
+        columns = ["A"]
+        values = pd.DataFrame(10.0, index=dates, columns=columns)
+        prices = {
+            "open": values,
+            "raw_open": values,
+            "close": values,
+            "raw_close": values,
+            # The day-two volume must not affect the day-two opening fill.
+            "volume": pd.DataFrame([100.0, 1_000_000.0, 100.0], index=dates, columns=columns),
+        }
+
+        result = run_local_backtest(
+            prices,
+            {dates[0]: pd.Series([1.0], index=columns)},
+            BacktestConfig(
+                initial_cash=10_000.0,
+                buy_cost=0.0,
+                sell_cost=0.0,
+                min_cost=0.0,
+                max_participation_rate=0.01,
+                liquidity_lookback_days=20,
+            ),
+            strategy_name="pit_participation_cap",
+        )
+
+        first_fill = result.trades.iloc[0]
+        self.assertEqual(first_fill["date"], dates[1].strftime("%Y-%m-%d"))
+        self.assertEqual(first_fill["amount"], 100)
+        self.assertEqual(first_fill["liquidity_estimate_hands"], 100.0)
+
+    def test_precomputed_volume_estimate_matches_default_path(self) -> None:
+        dates = pd.bdate_range("2026-01-05", periods=4)
+        columns = ["A"]
+        values = pd.DataFrame(10.0, index=dates, columns=columns)
+        prices = {
+            "open": values,
+            "raw_open": values,
+            "close": values,
+            "raw_close": values,
+            "volume": pd.DataFrame([100.0, 200.0, 300.0, 400.0], index=dates, columns=columns),
+        }
+        config = BacktestConfig(
+            initial_cash=10_000.0,
+            buy_cost=0.0,
+            sell_cost=0.0,
+            min_cost=0.0,
+            max_participation_rate=0.01,
+            liquidity_lookback_days=20,
+        )
+        targets = {dates[0]: pd.Series([1.0], index=columns)}
+        default = run_local_backtest(prices, targets, config, strategy_name="estimate_equivalence")
+        precomputed_prices = {
+            **prices,
+            "estimated_volume_hands": historical_volume_estimate(prices, 20),
+        }
+        precomputed = run_local_backtest(
+            precomputed_prices, targets, config, strategy_name="estimate_equivalence"
+        )
+        pd.testing.assert_frame_equal(default.trades, precomputed.trades)
+        pd.testing.assert_frame_equal(default.raw_perf, precomputed.raw_perf)
 
 
 if __name__ == "__main__":

@@ -81,6 +81,37 @@ ashare-stable --help
 The implementation composes PIT factor panels, historical industry membership,
 stock-only target construction, and the local backtest engine.
 
+## Adaptive Stock Strategy
+
+The breadth-adaptive executable entry is:
+
+```bash
+ashare-adaptive --help
+```
+
+`ashare_quant.strategies.adaptive_alpha` exposes the experimental baseline,
+machine-readable research status, breadth style selection, rebalance schedule,
+and PIT target builder. It is not currently production eligible.
+
+## Offset-Neutral Stock Strategy
+
+The frozen forward-validation candidate is exposed through:
+
+```bash
+ashare-offset-neutral --initial-cash 100000 --slippage 0.001
+```
+
+`ashare_quant.strategies.offset_neutral_alpha` provides:
+
+- `OffsetNeutralAlphaConfig`: immutable sleeve, factor, liquidity, and capital settings;
+- `build_offset_neutral_targets`: PIT target-weight generation;
+- `ResearchStatus`: machine-readable historical cutoff and forward-validation state.
+
+`--initial-cash` supports CNY 50,000 and above. CNY 200,000 is the recommended
+starting capital because board-lot and minimum-fee constraints are lower at
+that size. See [策略资产登记册](STRATEGY_ASSETS_zh-CN.md) for the asset boundary
+and [策略说明](OFFSET_NEUTRAL_STRATEGY_zh-CN.md) for research limitations.
+
 ## Data
 
 ```python

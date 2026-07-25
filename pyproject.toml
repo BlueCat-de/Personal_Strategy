@@ -23,6 +23,7 @@ classifiers = [
 dependencies = [
   "numpy>=1.24",
   "pandas>=2.0",
+  "matplotlib>=3.7",
   "tabulate>=0.9",
   "tushare>=1.2.89",
 ]
@@ -41,9 +42,16 @@ Issues = "https://github.com/BlueCat-de/Personal_Strategy/issues"
 [project.scripts]
 ashare-v4 = "ashare_quant.strategies.v4:main"
 ashare-stable = "ashare_quant.strategies.stable:main"
+ashare-adaptive = "ashare_quant.strategies.adaptive_alpha:main"
+ashare-offset-neutral = "ashare_quant.strategies.offset_neutral_alpha:main"
+ashare-financial-quality = "ashare_quant.strategies.financial_quality_alpha:main"
+ashare-main-board-bimonthly-ic = "ashare_quant.strategies.main_board_bimonthly_ic:main"
+ashare-plot-capital-curves = "ashare_quant.visualization.capital_curves:main"
 ashare-rebuild-data = "ashare_quant.data.pit:main"
 ashare-fetch-industries = "ashare_quant.data.industries:main"
 ashare-stability = "ashare_quant.research.stability:main"
+ashare-relative-strength = "ashare_quant.research.relative_strength:main"
+ashare-style-frequency = "ashare_quant.research.style_frequency:main"
 ashare-daemon = "ashare_quant.automation.daemon:main"
 
 [tool.setuptools.packages.find]
