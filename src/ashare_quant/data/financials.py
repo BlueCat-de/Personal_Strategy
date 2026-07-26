@@ -35,6 +35,10 @@ FINANCIAL_COLUMNS = [
     "q_sales_yoy",
     "dt_netprofit_yoy",
     "ocf_yoy",
+    # Extended (deployable on Ptrade: net_asset_grow_rate / roa / roe_weighted)
+    "equity_yoy",
+    "roa",
+    "roe_waa",
 ]
 
 

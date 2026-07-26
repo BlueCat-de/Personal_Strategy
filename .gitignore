@@ -48,6 +48,7 @@ REPRODUCTION_DATA_MANIFEST.json
 src/ashare_quant/strategies/*.py
 !src/ashare_quant/strategies/__init__.py
 src/ashare_quant/research/*.py
+src/ashare_quant/research/*.js
 !src/ashare_quant/research/__init__.py
 
 # === Strategy code: deploy/ptrade/ (private) ===
