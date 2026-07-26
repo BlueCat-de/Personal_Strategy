@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(PYTHONIOENCODING=utf-8 .venv/Scripts/python.exe -m ashare_quant.research.aggressive_parameter_search)",
+      "Bash(PYTHONIOENCODING=utf-8 MPLBACKEND=Agg .venv/Scripts/python.exe -m ashare_quant.strategies.aggressive_momentum_growth --positions 6 --universe-mode all --include-test --warmup-start-date 2006-01-04 --start-date 2007-01-01 --end-date 2026-07-17 --output-dir data/backtests/aggressive_p6_all)",
+      "Bash(PYTHONIOENCODING=utf-8 .venv/Scripts/python.exe -m pytest tests/test_regime_switch_alpha.py -v)",
+      "Bash(PYTHONIOENCODING=utf-8 MPLBACKEND=Agg .venv/Scripts/python.exe -m ashare_quant.strategies.regime_switch_alpha --start-date 2007-01-01 --end-date 2020-12-31 --warmup-start-date 2006-01-04 --regime-ma 120 --output-dir data/backtests/regime_switch_alpha_trainval)",
+      "Bash(PYTHONIOENCODING=utf-8 MPLBACKEND=Agg .venv/Scripts/python.exe -m ashare_quant.strategies.regime_switch_alpha --start-date 2007-01-01 --end-date 2020-12-31 --warmup-start-date 2006-01-04 --regime-ma 60 --output-dir data/backtests/regime_switch_alpha_ma60_trainval)",
+      "Bash(PYTHONIOENCODING=utf-8 MPLBACKEND=Agg .venv/Scripts/python.exe -m ashare_quant.strategies.regime_switch_alpha --regime-ma 60 --include-test --warmup-start-date 2006-01-04 --start-date 2007-01-01 --end-date 2026-07-17 --output-dir data/backtests/regime_switch_alpha_ma60)"
+    ]
+  }
+}

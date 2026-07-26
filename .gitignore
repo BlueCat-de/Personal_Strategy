@@ -1,4 +1,4 @@
-# Python
+# === Python ===
 __pycache__/
 *.py[cod]
 *.pyo
@@ -14,66 +14,67 @@ build/
 dist/
 *.egg-info/
 
-# Virtual environments
+# === Virtual environments ===
 .venv/
 venv/
 env/
 
-# OS / editors
+# === OS / editors ===
 .DS_Store
 Thumbs.db
 .idea/
 .vscode/
 .trae/
 
-# Local secrets
+# === Secrets & tokens ===
 .env
 .env.*
 !.env.example
 .feishu_webhook
 !.feishu_webhook.example
+env.local
 deploy/ptrade/tushare_token.csv
-deploy/ptrade/交易详情*.csv
 
-# Data and runtime outputs
+# === Data & runtime outputs ===
 /data/
 logs/
 run/
 .crawler_state/
 *.log
-
-# Notebooks
 .ipynb_checkpoints/
-
 REPRODUCTION_DATA_MANIFEST.json
 
-# Strategy core assets (private; kept local, never committed)
+# === Strategy code: src/ (private) ===
 src/ashare_quant/strategies/*.py
 !src/ashare_quant/strategies/__init__.py
 src/ashare_quant/research/*.py
 !src/ashare_quant/research/__init__.py
-deploy/ptrade/main_board_bimonthly_ic.py
-deploy/ptrade/main_board_bimonthly_ic_timed.py
-docs/CLIENT_STRATEGY_RESEARCH_REPORT_zh-CN.md
-docs/CORE_SATELLITE_BLEND_RESEARCH_zh-CN.md
-docs/DUAL_REGIME_STRATEGY_RESEARCH_zh-CN.md
-docs/EXECUTION_INTERFACE_PIT_AUDIT_zh-CN.md
-docs/FUTURE_FUNCTION_AUDIT_zh-CN.md
-docs/INCREMENTAL_BEHAVIORAL_FACTOR_RESEARCH_zh-CN.md
-docs/LONG_HORIZON_RESEARCH_PROTOCOL_zh-CN.md
-docs/LONG_HORIZON_STRATEGY_REPORT_zh-CN.md
-docs/MAIN_BOARD_BIMONTHLY_IC_ASSET_zh-CN.md
-docs/MARKET_CAP_STYLE_AUDIT_zh-CN.md
-docs/OFFSET_NEUTRAL_STRATEGY_zh-CN.md
-docs/PTRADE_MAIN_BOARD_BIMONTHLY_IC_zh-CN.md
-docs/PUBLIC_FUND_PROMOTION_REPORT_zh-CN.md
-docs/SCORE_LAYER_BLEND_RESEARCH_zh-CN.md
-docs/STRATEGY_ASSETS_zh-CN.md
-docs/STRATEGY_VALIDATION_zh-CN.md
-docs/STRICT_PIT_FACTOR_IC_COMBINATION_REPORT_zh-CN.md
-docs/STRICT_PIT_STYLE_FREQUENCY_EXPLORATION_zh-CN.md
-docs/STYLE_FREQUENCY_EXPLORATION_REPORT_zh-CN.md
-docs/TIMING_STRATEGY_RESEARCH_zh-CN.md
-tests/test_main_board_bimonthly_ic_timed.py
-tests/test_ptrade_adapter_timed.py
-env.local
+
+# === Strategy code: deploy/ptrade/ (private) ===
+deploy/ptrade/*.py
+deploy/ptrade/*.pkl
+deploy/ptrade/交易详情*.csv
+deploy/ptrade/10000000.csv
+
+# === Strategy tests (private; ignore all except infrastructure) ===
+tests/test_*.py
+!tests/test_benchmark.py
+!tests/test_capital_curves.py
+!tests/test_local_backtest_slippage.py
+!tests/test_point_in_time_data.py
+
+# === Strategy docs (private research reports) ===
+docs/*STRATEGY*.md
+docs/*RESEARCH*.md
+docs/*AUDIT*.md
+docs/*REPORT*.md
+docs/*ASSET*.md
+docs/*VALIDATION*.md
+docs/*PROTOCOL*.md
+docs/*EXPLORATION*.md
+docs/*FREQUENCY*.md
+docs/*BLEND*.md
+docs/*PTRADE*.md
+docs/*PIT*.md
+docs/*OFFSET_NEUTRAL*.md
+docs/*PROMOTION*.md
