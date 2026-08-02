@@ -204,10 +204,12 @@ Michaud (1989) 的"**误差最大化器**"诊断:MVO 求协方差矩阵的逆,**
 ### 8.1 泄漏防护交叉验证
 标准 k-fold 在金融上**结构性失效**:(a) 打乱摧毁时序(未来泄漏进训练);(b) 金融标签路径依赖(带事件窗口),即便按时序划分仍跨边界泄漏。
 - **业界处理**:**带清洗与禁运的 k 折(Purged K-Fold CV + Embargo)**——清除标签事件窗口与测试折重叠的训练观测;每个测试折后加禁运缓冲(≥最大特征回看期)。**组合清洗交叉验证 CPCV** 用 N 组 k 测试组组合,从单一历史合成 φ 条以上相互独立、尊重时序的回测路径,配套平均标签唯一性/样本加权。
+- **本仓库实现**:`research/walk_forward.py` 的 `walk_forward_folds(..., embargo_days=21)` 产出带 embargo 间隔的 train/test 折；`evaluation/significance.py` 的 `pbo_cscv(returns_matrix)` 实现真 CSCV（接 N 策略收益矩阵）；切分边界统一在 `research/splits.py`。注：旧 `probability_of_backtest_overfitting` 是**单策略 block-bootstrap 代理**（非真 CSCV），保留为 `pbo_block_bootstrap` 别名。
 - 参考:[Cross Validation in Finance (QuantInsti)](https://blog.quantinsti.com/cross-validation-embargo-purging-combinatorial/) | [Combinatorial Purged CV (QuantBeckman)](https://www.quantbeckman.com/p/with-code-combinatorial-purged-cross)
 
 ### 8.2 前向分析与参数稳定性 ★
 - **前向分析 Walk-Forward**:滚动/锚定窗口内样本内优化、紧随其后的样本外测试、汇总样本外为一条净值曲线。**关键诊断是参数稳定性**:若最优参数在窗口间剧烈跳跃(如 12 → 47 → 23),即便汇总样本外盈亏为正,"边际"也是曲线拟合。
+- **本仓库实现**:`research/walk_forward.py` 的 `walk_forward_stability(raw_perf, benchmark, test_years, step_years)` 把已产出的净值曲线切成滚动 OOS 窗口，逐窗算 Sharpe/IR 并聚合（均值/标准差/最差窗/**衰减斜率**/IR>0 占比/`systematic_decay` 判定）；CLI `python -m ashare_quant.research.walk_forward --raw-perf ...`，或评测管线 `--walk-forward`。实证（v2，2026-08）：前半段 Sharpe 1.38 → 后半段 0.59，`systematic_decay=true`——单段 test 衰减被证实为系统性。
 - **参数敏感性**:**"选高原不选孤峰"(prefer plateaus over peaks)**——选稳定区域中心而非单个过优化点;孤峰周围全是差邻居 = 过拟合红旗。用**参数稳健性评分**(邻近参数集的业绩方差)量化。
 - 参考:[Walk Forward Optimization (Build Alpha)](https://www.buildalpha.com/walk-forward-optimization/) | [Robustness Testing Guide](https://www.buildalpha.com/robustness-testing-guide/) | [Red Flag Detection via Parameter Sensitivity](https://medium.com/@kryptera/red-flag-strategy-detection-using-parameter-sensitivity-analysis-09b7e62a2521)
 

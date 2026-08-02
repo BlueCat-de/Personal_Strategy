@@ -270,6 +270,63 @@ def fetch_fina_indicator(
     )
 
 
+def fetch_income(
+    ts_code: str,
+    start_date: str,
+    end_date: str,
+    env_file: Path = DEFAULT_ENV_FILE,
+) -> pd.DataFrame:
+    """Fetch raw income statement (利润表) levels — for true accruals factors."""
+    pro = get_pro_client(env_file)
+    return _retry_call(
+        lambda: pro.income(
+            ts_code=ts_code,
+            start_date=pd.to_datetime(start_date).strftime("%Y%m%d"),
+            end_date=pd.to_datetime(end_date).strftime("%Y%m%d"),
+        ),
+        retries=5,
+        sleep_seconds=15.0,
+    )
+
+
+def fetch_balancesheet(
+    ts_code: str,
+    start_date: str,
+    end_date: str,
+    env_file: Path = DEFAULT_ENV_FILE,
+) -> pd.DataFrame:
+    """Fetch raw balance sheet (资产负债表) levels — total_assets etc. for asset-growth."""
+    pro = get_pro_client(env_file)
+    return _retry_call(
+        lambda: pro.balancesheet(
+            ts_code=ts_code,
+            start_date=pd.to_datetime(start_date).strftime("%Y%m%d"),
+            end_date=pd.to_datetime(end_date).strftime("%Y%m%d"),
+        ),
+        retries=5,
+        sleep_seconds=15.0,
+    )
+
+
+def fetch_cashflow(
+    ts_code: str,
+    start_date: str,
+    end_date: str,
+    env_file: Path = DEFAULT_ENV_FILE,
+) -> pd.DataFrame:
+    """Fetch raw cash flow statement (现金流量表) — operating/investing/financing cash."""
+    pro = get_pro_client(env_file)
+    return _retry_call(
+        lambda: pro.cashflow(
+            ts_code=ts_code,
+            start_date=pd.to_datetime(start_date).strftime("%Y%m%d"),
+            end_date=pd.to_datetime(end_date).strftime("%Y%m%d"),
+        ),
+        retries=5,
+        sleep_seconds=15.0,
+    )
+
+
 def fetch_suspend(trade_date: str, env_file: Path = DEFAULT_ENV_FILE) -> pd.DataFrame:
     pro = get_pro_client(env_file)
     compact = pd.to_datetime(trade_date).strftime("%Y%m%d")

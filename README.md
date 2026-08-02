@@ -18,9 +18,15 @@ and daily signal automation.
 - Builds a point-in-time A-share dataset from Tushare Pro.
 - Separates adjusted factor prices from raw execution prices.
 - Restores historical listing, delisting, ST, suspension, and price-limit state.
+- Caches raw income / balance-sheet / cash-flow statements with PIT `available_date
+  = ann_date + 1` (joined same-period, deployable on Ptrade `get_fundamentals`).
 - Executes signals at the next trading day's raw open.
 - Models board lots, commissions, stamp duty, minimum fees, and bilateral slippage.
 - Includes a defensive v4 strategy and a diversified stock-only factor strategy.
+- Ships an evaluation framework: Sharpe/Sortino/Calmar/Omega/Ulcer/VaR/CVaR,
+  statistical significance (PSR, DSR, PBO/CSCV, Haircut Sharpe, MinTRL), CAPM
+  attribution, stress/regime analysis, cost & turnover, and a walk-forward
+  rolling-OOS stability diagnostic with embargo.
 - Supports market-cap, industry, style, rebalance-date, and slippage robustness tests.
 - Runs scheduled data updates, strategy checks, and optional Feishu/Lark notifications.
 
@@ -41,7 +47,8 @@ runtime logs, and backtest outputs.
 .
 ├── src/ashare_quant/
 │   ├── automation/       # Daily scheduler and Feishu/Lark notifications
-│   ├── data/             # Tushare adapter, PIT builder, industry history
+│   ├── data/             # Tushare adapter, PIT builder, industry history, raw statements
+│   ├── evaluation/       # Backtest metrics, significance (PSR/DSR/PBO), walk-forward OOS
 │   ├── research/         # Factor panels and stability experiments
 │   ├── strategies/       # v4, experimental, and forward-validation strategies
 │   ├── visualization/    # matplotlib research charts
@@ -351,7 +358,10 @@ data/offline/a_share_history_tushare/
 ├── sw_l1_membership_history.csv
 ├── .daily_basic_monthly_cache/
 ├── .long_horizon_daily_basic_cache/
-└── .long_horizon_fina_indicator_cache/
+├── .long_horizon_fina_indicator_cache/
+├── .income_statement_cache/
+├── .balancesheet_statement_cache/
+└── .cashflow_statement_cache/
 ```
 
 These inputs reproduce the frozen main-board strategy and the committed
@@ -385,7 +395,13 @@ The separate cache names are intentional:
 
 - `.daily_basic_monthly_cache`: short-horizon strategy inputs.
 - `.long_horizon_daily_basic_cache`: 2007-2026 style and factor research.
-- `.long_horizon_fina_indicator_cache`: announcement-dated financial history.
+- `.long_horizon_fina_indicator_cache`: announcement-dated financial ratio history.
+- `.income_statement_cache` / `.balancesheet_statement_cache` /
+  `.cashflow_statement_cache`: raw statement LEVELS (PIT, joined same-period).
+  Build with `python -m ashare_quant.data.statements --statement {income,balancesheet,cashflow}`.
+  Used for cross-statement factors (e.g. Sloan accruals, asset-growth) that the ratio
+  table cannot express. Fields are restricted to `DEPLOYABLE_FIELD_MAP` (local Tushare
+  name ↔ Ptrade `get_fundamentals` name).
 - `sw_l1_membership_history.csv`: versioned PIT Shenwan membership.
 - `benchmark_000300.csv`: offline CSI 300 price-index comparison.
 
