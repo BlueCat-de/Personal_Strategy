@@ -9,7 +9,7 @@
       "Bash(PYTHONIOENCODING=utf-8 MPLBACKEND=Agg .venv/Scripts/python.exe -m ashare_quant.strategies.regime_switch_alpha --regime-ma 60 --include-test --warmup-start-date 2006-01-04 --start-date 2007-01-01 --end-date 2026-07-17 --output-dir data/backtests/regime_switch_alpha_ma60)",
       "WebSearch",
       "Bash(.venv/Scripts/python.exe -c ' *)",
-      "Bash(timeout 300 .venv/Scripts/python.exe -m ashare_quant.research.walk_forward --raw-perf data/backtests/composite_alpha_v2_test/local_raw_perf.csv --test-years 2 --step-years 1)"
+      "Bash(timeout 300 .venv/Scripts/python.exe -m ashare_quant.evaluation.walk_forward --raw-perf data/backtests/composite_alpha_v2_test/local_raw_perf.csv --test-years 2 --step-years 1)"
     ]
   }
 }

@@ -136,7 +136,7 @@ row = run_eval(prices, targets, benchmark, bt_config, tag)   # 返回 dev/val �
 ## 4. 执行步骤
 
 ```bash
-# 默认在 train+val（2015-01-01 ~ 2023-12-31，现代市场切分 research/splits.py）上跑全部 6 维度
+# 默认在 train+val（2015-01-01 ~ 2023-12-31，现代市场切分 splits.py）上跑全部 6 维度
 .venv/Scripts/python.exe -m ashare_quant.research.composite_robustness
 
 # 产物：
