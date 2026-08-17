@@ -11,4 +11,6 @@ Modules:
   costs        — Turnover, cost drag, holding period, capacity
   report       — Markdown report + matplotlib charts
   pipeline     — Main orchestrator
+  walk_forward             — rolling-OOS / walk-forward stability + embargo folds
+  auxiliary_factor_protocol — auxiliary/risk-overlay admission (parallel to IC screening)
 """

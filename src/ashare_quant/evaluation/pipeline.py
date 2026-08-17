@@ -20,12 +20,24 @@ from ashare_quant.benchmark import fetch_benchmark
 from ashare_quant.evaluation import attribution, costs, metrics, report, risk, significance
 from ashare_quant.paths import PROJECT_ROOT
 
-# Default train/val/test boundaries. Canonical source is the (private) research layer;
-# inlined here so this package imports standalone without research/. Prefer passing the
-# split explicitly when the research layer is available (research/splits.py).
-_DEV_START, _DEV_END = "2007-01-01", "2013-12-31"
-_VAL_START, _VAL_END = "2014-01-01", "2020-12-31"
-_TEST_START = "2021-01-01"
+# Default train/val/test boundaries — canonical source is splits.py (the
+# modern 2015-2021 / 2022-2023 / 2024+ split). The strategy layer already reports on
+# these boundaries; the eval pipeline MUST match, or its dev/val/test segmentation
+# diverges from the strategy's own (the old inline 2007-2013 values were the legacy
+# split and caused exactly that mismatch). Fall back to inline legacy values ONLY if
+# the research layer is unavailable, so this package still imports standalone.
+try:
+    from ashare_quant.splits import (
+        DEVELOPMENT_START as _DEV_START,
+        DEVELOPMENT_END as _DEV_END,
+        VALIDATION_START as _VAL_START,
+        VALIDATION_END as _VAL_END,
+        TEST_START as _TEST_START,
+    )
+except ImportError:  # standalone import without the research layer
+    _DEV_START, _DEV_END = "2007-01-01", "2013-12-31"
+    _VAL_START, _VAL_END = "2014-01-01", "2020-12-31"
+    _TEST_START = "2021-01-01"
 
 
 def evaluate_strategy(
@@ -52,7 +64,7 @@ def evaluate_strategy(
     # research/ installed; calling evaluate_strategy requires it.
     from ashare_quant.research.long_horizon import segment_metrics
     if walk_forward:
-        from ashare_quant.research.walk_forward import walk_forward_stability
+        from ashare_quant.evaluation.walk_forward import walk_forward_stability
 
     print("=== Strategy Evaluation Pipeline ===", flush=True)
     print(f"Strategy: {strategy_name}", flush=True)

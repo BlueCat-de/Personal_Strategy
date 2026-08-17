@@ -63,6 +63,7 @@ tests/test_*.py
 !tests/test_capital_curves.py
 !tests/test_local_backtest_slippage.py
 !tests/test_point_in_time_data.py
+!tests/test_auxiliary_factor_protocol.py
 
 # === Strategy docs (private research reports) ===
 docs/*STRATEGY*.md
