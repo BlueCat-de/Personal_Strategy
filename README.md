@@ -3,15 +3,53 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 [![License: GPL v3](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
 
-Point-in-time A-share data engineering, factor research, realistic backtesting,
-and daily signal automation.
+Point-in-time A-share data engineering, factor research, honest evaluation,
+and deployment automation — organized around one question:
+**"would you dare to trade this strategy live?"**
 
 [中文文档](docs/README_zh-CN.md) | [Architecture](docs/ARCHITECTURE.md) |
-[Python API](docs/API.md) | [策略资产登记册](docs/STRATEGY_ASSETS_zh-CN.md) |
+[Python API](docs/API.md) | [Robustness SOP](docs/SOP_ROBUSTNESS_ANALYSIS.md) |
 [Contributing](CONTRIBUTING.md)
 
 > This project is for research and education. It does not provide investment
 > advice, guarantee returns, or place live orders.
+
+## Why this repository is different
+
+Retail backtests usually die of three silent bugs: look-ahead bias, survivorship
+bias, and selection bias (turning knobs until something looks good). This
+project treats all three as engineering problems with code-level answers:
+
+1. **Data sovereignty, point-in-time first.** The daily universe, ST /
+   suspension / delisting state, and the raw-vs-adjusted price tracks are
+   rebuilt as-of each trading day; financial statements become visible only at
+   `ann_date + 1`; adjusted prices feed factors while raw prices feed
+   execution. Rebuilds are atomic, cached, and auditable.
+2. **Evaluation that quantifies skepticism.** Beyond the metric suite
+   (Sharpe/Sortino/Calmar/Omega/Ulcer/VaR/CVaR), the pipeline runs PSR,
+   Deflated Sharpe (trial-count corrected), PBO/CSCV, Haircut Sharpe, and
+   MinTRL, plus walk-forward out-of-sample diagnostics with an embargo.
+   Sample discipline is explicit: train 2015–2021, validation 2022–2023, and
+   a 2024+ lockbox that is unblinded exactly once.
+3. **Two factor-admission channels, both with hard gates.** Stock factors
+   enter by strict-PIT rank IC with both-half stability. Auxiliary / risk
+   overlays (volatility targeting, drawdown ladders, regime gates) enter
+   through a parallel protocol judged on the marginal portfolio-level delta
+   against a frozen baseline — walk-forward direction consistency, bootstrap
+   p-values, a reject-only Sharpe rail, a separate complexity budget, and
+   sizing-only scope (they never touch the stock ranking).
+4. **Two independent implementations before real money.** A strategy is only
+   trusted after the local engine and the broker-side (Ptrade) backtest agree.
+   Deployment adapters carry layered execution defenses — signal retry,
+   missed-signal recovery, suspension and delayed-open handling, T+1 enable
+   amounts — validated by a simulated-broker test harness before any live
+   smoke test.
+5. **Governance an AI coding agent can follow.** SOPs are numeric and
+   machine-checkable, baselines are frozen (commit + CSV sha256), and every
+   admission trial — including rejects — is appended to a trial log that feeds
+   the Deflated Sharpe trial count. Research campaigns can be delegated to
+   coding agents inside these guardrails; the guardrails, not the agent's
+   discipline, keep the results honest.
 
 ## Features
 
@@ -22,16 +60,21 @@ and daily signal automation.
   = ann_date + 1` (joined same-period, deployable on Ptrade `get_fundamentals`).
 - Executes signals at the next trading day's raw open.
 - Models board lots, commissions, stamp duty, minimum fees, and bilateral slippage.
-- Includes a defensive v4 strategy and a diversified stock-only factor strategy.
+- Includes a stock backtest engine and a dedicated ETF rotation engine
+  (close execution, sell-before-buy, suspension-aware marking).
+- Includes a defensive v4 strategy, a diversified stock-only factor composite,
+  and an ETF cross-asset rotation strategy.
 - Ships an evaluation framework: Sharpe/Sortino/Calmar/Omega/Ulcer/VaR/CVaR,
   statistical significance (PSR, DSR, PBO/CSCV, Haircut Sharpe, MinTRL), CAPM
   attribution, stress/regime analysis, cost & turnover, and a walk-forward
   rolling-OOS stability diagnostic with embargo.
+- Admits auxiliary/risk overlays through a marginal-delta protocol with a
+  six-case discrimination self-test (real overlays pass, permuted nulls fail).
 - Supports market-cap, industry, style, rebalance-date, and slippage robustness tests.
 - Runs scheduled data updates, strategy checks, and optional Feishu/Lark notifications.
 
 The repository intentionally excludes market data, API tokens, webhook URLs,
-runtime logs, and backtest outputs.
+runtime logs, backtest outputs, and private strategy assets.
 
 ## Tech Stack
 
@@ -48,15 +91,20 @@ runtime logs, and backtest outputs.
 ├── src/ashare_quant/
 │   ├── automation/       # Daily scheduler and Feishu/Lark notifications
 │   ├── data/             # Tushare adapter, PIT builder, industry history, raw statements
-│   ├── evaluation/       # Backtest metrics, significance (PSR/DSR/PBO), walk-forward OOS
-│   ├── research/         # Factor panels and stability experiments
-│   ├── strategies/       # v4, experimental, and forward-validation strategies
+│   ├── evaluation/       # Metrics, significance (PSR/DSR/PBO), walk-forward OOS,
+│   │                     # and the auxiliary-factor admission protocol
+│   ├── research/         # Factor panels, IC diagnostics, stability experiments
+│   ├── strategies/       # v4, composites, ETF rotation, forward-validation assets
 │   ├── visualization/    # matplotlib research charts
-│   ├── backtest.py       # Next-open execution engine
+│   ├── backtest.py       # Next-open execution engine (stocks)
+│   ├── etf_backtest.py   # ETF rotation engine (close execution)
+│   ├── splits.py         # train / validation / lockbox split, single source of truth
 │   ├── benchmark.py      # CSI 300 retrieval and relative metrics
 │   └── paths.py          # Repository-local paths
-├── tests/
-├── docs/
+├── deploy/ptrade/        # Broker-side adapters with layered execution defenses
+├── scripts/              # Research probes and deployment bundling
+├── tests/                # Unit tests incl. a simulated-broker adapter harness
+├── docs/                 # SOPs, architecture, API, research records
 ├── pyproject.toml
 └── requirements.txt
 ```
@@ -155,11 +203,6 @@ data/offline/a_share_growth_boards_tushare/
 Backtests keep `--board-scope main` by default. To include the growth-board
 file at runtime without merging files on disk:
 
-> **Audit status:** `financial_quality_alpha` is under full revalidation after
-> point-in-time data defects were found and corrected. Historical performance
-> published before 2026-07-21 is invalid and must not be used for investment
-> decisions. See [Future-function audit](docs/FUTURE_FUNCTION_AUDIT_zh-CN.md).
-
 ```bash
 ashare-financial-quality \
   --prices-file data/offline/a_share_history_tushare/prices_long.csv \
@@ -172,6 +215,11 @@ ashare-financial-quality \
   --slippage 0.001 \
   --output-dir data/backtests/financial_quality_all_boards
 ```
+
+> **Audit status:** `financial_quality_alpha` is under full revalidation after
+> point-in-time data defects were found and corrected. Historical performance
+> published before 2026-07-21 is invalid and must not be used for investment
+> decisions. See [Future-function audit](docs/FUTURE_FUNCTION_AUDIT_zh-CN.md).
 
 See [Architecture](docs/ARCHITECTURE.md) for the schema and PIT rules.
 

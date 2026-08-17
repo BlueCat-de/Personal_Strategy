@@ -1,14 +1,41 @@
 # AShare Quant
 
-面向A股的点时数据工程、因子研究、真实约束回测和每日信号自动化工具。
+面向A股的点时（point-in-time）数据工程、因子研究、可信评测与部署自动化——
+整个仓库围绕一个问题组织：**"这个策略，你敢上实盘吗？"**
 
 [English](../README.md) | [架构说明](ARCHITECTURE.md) |
-[Python API](API.md) | [严格PIT风格探索](STRICT_PIT_STYLE_FREQUENCY_EXPLORATION_zh-CN.md) |
-[严格PIT因子IC组合](STRICT_PIT_FACTOR_IC_COMBINATION_REPORT_zh-CN.md) |
-[主板双月IC资产](MAIN_BOARD_BIMONTHLY_IC_ASSET_zh-CN.md) |
+[Python API](API.md) | [健壮性分析SOP](SOP_ROBUSTNESS_ANALYSIS.md) |
 [贡献指南](../CONTRIBUTING.md)
 
 > 本项目仅用于研究与教育，不构成投资建议，不保证收益，也不会自动下单。
+
+## 这个仓库有什么不一样
+
+个人回测通常死于三个静默错误：未来函数、幸存者偏差和选择偏差
+（ knobs 拧得足够多，总有一个看起来很好）。本项目把这三件事都当作
+工程问题，用代码而非"评审自觉"来解决：
+
+1. **数据主权，PIT 优先。** 每日宇宙、ST/停牌/退市状态、复权价与原始价
+   双轨，全部按"当日有效"重建；财报在 `ann_date + 1` 之后才可见；
+   复权价喂因子、原始价喂执行。重建原子化、可缓存、可审计。
+2. **把怀疑量化成评测。** 指标全家桶（Sharpe/Sortino/Calmar/Omega/
+   Ulcer/VaR/CVaR）之外，管线还跑 PSR、缩减夏普（按试验数校正）、
+   PBO/CSCV、Haircut Sharpe、MinTRL，以及带 embargo 的 walk-forward
+   样本外诊断。样本纪律显式化：train 2015–2021 / val 2022–2023 /
+   **2024+ 锁盒只揭盲一次**。
+3. **双通道因子准入，都有硬门。** 股票因子按严格 PIT 的 rank IC 与
+   双半段稳定性准入；辅助/风险 overlay（波动目标、回撤阶梯、状态门）
+   走并行协议——按对冻结基线的**边际组合级 delta** 判定，含 walk-forward
+   方向一致性、bootstrap p 值、reject-only Sharpe 护栏、独立复杂度预算，
+   且只进仓位构建、绝不进选股打分。
+4. **真金白银之前先要两套独立实现。** 本地引擎与券商侧（Ptrade）回测
+   结论一致，策略才被信任。部署适配器带分层执行防御——信号重试、
+   停机漏信号恢复、停牌与延迟开盘处理、T+1 可卖数量——上实盘冒烟
+   之前先过模拟撮合测试。
+5. **AI coding agent 也能遵循的治理。** SOP 数值化、机器可校验；基线
+   冻结（commit + CSV sha256）；每次准入试验——包括被拒绝的——都追加进
+   台账并计入缩减夏普的试验数。研究战役可以委托给 coding agent 在
+   护栏内执行；让结果诚实的，是护栏，不是 agent 的自觉。
 
 ## 功能特性
 
@@ -17,11 +44,17 @@
 - 按历史日期恢复上市、退市、ST、停牌和涨跌停状态。
 - 信号在下一交易日真实开盘价执行。
 - 支持100股整数手、佣金、印花税、最低费用和双边滑点。
-- 内置防守型v4策略和分散化纯股票因子策略。
+- 内置股票回测引擎与专用ETF轮动引擎（收盘成交、先卖后买、停牌感知盯市）。
+- 内置防守型v4策略、分散化纯股票因子组合和ETF跨资产轮动策略。
+- 评测框架：全套风险收益指标 + 统计显著性（PSR/DSR/PBO/CSCV/
+  Haircut Sharpe/MinTRL）+ CAPM归因 + 压力/状态分析 + 成本容量 +
+  带 embargo 的 walk-forward 稳定性诊断。
+- 辅助/风险 overlay 按边际 delta 协议准入，内置六案例判别自检
+  （真 overlay 通过、置乱零假设被拒）。
 - 支持市值、行业、风格、调仓日期和滑点稳定性实验。
 - 支持定时取数、策略检查及可选飞书/Lark通知。
 
-仓库不提交行情数据、API Token、Webhook、日志和回测输出。
+仓库不提交行情数据、API Token、Webhook、日志、回测输出和私有策略资产。
 
 ## 技术栈
 
@@ -37,14 +70,21 @@
 .
 ├── src/ashare_quant/
 │   ├── automation/       # 每日调度和飞书/Lark通知
-│   ├── data/             # Tushare适配、PIT数据和行业历史
-│   ├── research/         # 因子面板和稳定性实验
-│   ├── strategies/       # v4和稳定纯股票策略
-│   ├── backtest.py       # 下一交易日开盘撮合器
+│   ├── data/             # Tushare适配、PIT数据、行业历史和原始财报缓存
+│   ├── evaluation/       # 指标、显著性检验(PSR/DSR/PBO)、walk-forward、
+│   │                     # 辅助因子准入协议
+│   ├── research/         # 因子面板、IC诊断和稳定性实验
+│   ├── strategies/       # v4、复合因子、ETF轮动和前向验证资产
+│   ├── visualization/    # matplotlib研究图表
+│   ├── backtest.py       # 股票回测引擎（次开盘撮合）
+│   ├── etf_backtest.py   # ETF轮动引擎（收盘撮合）
+│   ├── splits.py         # train/val/锁盒切分的单一事实源
 │   ├── benchmark.py      # 沪深300与相对绩效
 │   └── paths.py          # 项目路径
-├── tests/
-├── docs/
+├── deploy/ptrade/        # 券商侧适配器（分层执行防御）
+├── scripts/              # 研究探针与部署打包
+├── tests/                # 单元测试（含模拟撮合的适配器测试）
+├── docs/                 # SOP、架构、API和研究记录
 ├── pyproject.toml
 └── requirements.txt
 ```

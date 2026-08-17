@@ -80,3 +80,6 @@ docs/*PTRADE*.md
 docs/*PIT*.md
 docs/*OFFSET_NEUTRAL*.md
 docs/*PROMOTION*.md
+
+# === Third-party local data engine (nested git repo; never vendor) ===
+free-stockdb/
